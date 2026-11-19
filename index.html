@@ -221,7 +221,7 @@ const nkg=v=>Math.round((+String(v??'').replace(/\s|kg/gi,'').replace(',','.')||
 function downloadJSON(name,obj){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(obj)],{type:'application/json'}));a.download=name;a.click()}
 
 // ---------- Almacenamiento (local + Supabase) ----------
-const COLLS=['config','usuarios','productos','clientes','ventas','devoluciones','cajas','movimientos','recepciones','espera','conteos','conteoItems','averias','bajas','sugeridos'];
+const COLLS=['config','usuarios','productos','clientes','ventas','devoluciones','cajas','movimientos','recepciones','espera','conteos','conteoItems','averias','bajas','sugeridos','descuadres'];
 const DB={
   d:{},sb:null,
   loadLocal(){try{this.d=JSON.parse(localStorage.getItem('minipos_v1'))||{}}catch(e){this.d={}}COLLS.forEach(c=>this.d[c]=this.d[c]||{})},
@@ -359,7 +359,12 @@ function seed(){
     DB.put('averias',{numero:an++,fecha:f.toISOString(),pid:p.id,nombre:p.nombre,codigo:p.codigo,empresa:p.empresa,linea:p.linea,cant:c,ubic:'sala',motivo:mo,obs:'',costo:p.costo,estado:'pendiente',usuario:'Andrés Cajero'})});
   let bn=1;[['Galletas Festival',4,'Autoconsumo','Refrigerio empleados'],['Café Sello Rojo',1,'Consumo interno','Café para la tienda'],['Bon Bon Bum',12,'Obsequio / degustación','Para niños clientes']].forEach(([nm,c,t,no])=>{const p=pb(nm);if(!p)return;const f=new Date();f.setDate(f.getDate()-bn*3);
     DB.put('bajas',{numero:bn++,fecha:f.toISOString(),pid:p.id,nombre:p.nombre,codigo:p.codigo,linea:p.linea,empresa:p.empresa,cant:c,ubic:'sala',tipo:t,nota:no,costo:p.costo,valor:c*p.costo,usuario:'Laura Supervisor',autorizo:'Administrador'})});
-  saveCfg({consecutivo:n,recConsecutivo:rn,averiaConsecutivo:an,bajaConsecutivo:bn});
+  const uC=DB.all('usuarios').find(u=>u.usuario==='cajero1'),uS=DB.all('usuarios').find(u=>u.usuario==='supervisor');let cn=1;
+  [[3,uC,-12000,'Faltó un billete de $10.000 y $2.000 en monedas'],[2,uS,0,''],[1,uC,0,'']].forEach(([dd,u,dif,obs])=>{const a=new Date();a.setDate(a.getDate()-dd);a.setHours(7,0,0,0);const z=new Date(a);z.setHours(21,10,0,0);
+    const ef=380000+Math.round(Math.random()*90)*1000,tr=150000+Math.round(Math.random()*60)*1000,esp=100000+ef;const cj=DB.put('cajas',{numero:cn++,usuario:u.id,usuarioNombre:u.nombre,terminal:'Caja 1',apertura:a.toISOString(),base:100000,estado:'cerrada',movs:[],cierre:z.toISOString(),cerroPor:dif?'Laura Supervisor':u.nombre,
+      resumen:{totalVentas:ef+tr,efectivo:ef,transf:tr,tarjeta:0,devEf:0,ingresos:0,egresos:0,porBanco:{Nequi:tr},tirillas:30,pos:30,fe:0},esperado:esp,contado:esp+dif,diferencia:dif,baseQueda:100000,entregado:esp+dif-100000,transfVerif:tr,transfNoVerif:0,descuadre:dif,obs,autorizo:dif?'Administrador':''});
+    if(dif){const d=DB.put('descuadres',{numero:1,fecha:z.toISOString(),cajaId:cj.id,cajaNumero:cj.numero,usuario:u.id,usuarioNombre:u.nombre,monto:dif,difEf:dif,difTr:0,difTc:0,noVerif:[],obs,autorizo:'Administrador',cerro:'Laura Supervisor',estado:'pendiente'});cj.descuadreId=d.id;DB.put('cajas',cj)}});
+  saveCfg({consecutivo:n,recConsecutivo:rn,averiaConsecutivo:an,bajaConsecutivo:bn,cajaConsecutivo:cn,descConsecutivo:2});
 }
 
 // ---------- Modales ----------
@@ -787,66 +792,147 @@ window.addEventListener('beforeunload',e=>{if(cart.items.length){e.preventDefaul
    CAJA: apertura, ingresos/egresos, arqueo y cierre
    ===================================================================== */
 const DENOMS=[100000,50000,20000,10000,5000,2000,1000,500,200,100,50];
-function renderCaja(){
-  const c=cajaAbierta();const v=$('#view');
-  const otras=can('admin_caja')?DB.all('cajas').filter(x=>x.estado==='abierta'&&x.usuario!==USER.id):[];
-  const hist=DB.all('cajas').filter(x=>x.estado==='cerrada'&&(can('admin_caja')||x.usuario===USER.id)).sort((a,b)=>b.numero-a.numero).slice(0,30);
-  let html=`<div class="page-head"><h2>Apertura, arqueo y cierre de caja</h2></div>`;
-  if(!c)html+=`<div class="card section"><h3>No tiene caja abierta</h3><p class="mut">Abra la caja ingresando la base para poder vender.</p><button class="btn pri" id="cjOpen">Abrir caja</button></div>`;
-  else{const r=cajaResumen(c);
-    html+=`<div class="kpis">
-      <div class="kpi"><small>Caja</small><div>#${c.numero}</div><em>${esc(c.terminal)} · desde ${fdt(c.apertura)}</em></div>
-      <div class="kpi"><small>Base</small><div>${money(c.base)}</div></div>
-      <div class="kpi"><small>Ventas totales</small><div>${money(r.totalVentas)}</div><em>${r.ventas.length} tirillas (${r.pos} POS · ${r.fe} FE)</em></div>
-      <div class="kpi"><small>Efectivo ventas</small><div>${money(r.efectivo)}</div></div>
-      <div class="kpi"><small>Transferencias</small><div>${money(r.transf)}</div><em>${r.transfers.length} transacciones</em></div>
-      <div class="kpi"><small>Tarjeta</small><div>${money(r.tarjeta)}</div></div>
-      <div class="kpi"><small>Devoluciones (efectivo)</small><div class="err">−${money(r.devEf)}</div></div>
-      <div class="kpi"><small>Ingresos / Egresos</small><div>${money(r.ingresos)} / <span class="err">${money(r.egresos)}</span></div></div>
-      <div class="kpi" style="border-color:var(--pri)"><small>Efectivo esperado en cajón</small><div style="color:var(--pri)">${money(r.esperado)}</div></div></div>
-    <div class="grid2 section"><div class="card"><h3>Ingresos y egresos de caja</h3><div class="row" style="margin-top:10px"><label style="max-width:130px">Tipo<select id="mvT"><option value="egreso">Egreso / retiro</option><option value="ingreso">Ingreso</option></select></label><label>Concepto<input id="mvC" placeholder="Pago proveedor, retiro parcial…"></label><label style="max-width:130px">Valor<input id="mvV" inputmode="numeric"></label><button class="btn" id="mvB" style="flex:0">Registrar</button></div>
-      <div class="tbl-wrap" style="margin-top:10px;max-height:200px"><table class="t"><tbody>${(c.movs||[]).map(m=>`<tr><td>${fhr(m.fecha)}</td><td>${m.tipo==='ingreso'?'<span class="pill ok">Ingreso</span>':'<span class="pill err">Egreso</span>'}</td><td>${esc(m.concepto)}</td><td class="r">${money(m.monto)}</td><td class="mut">${esc(m.autorizo||'')}</td></tr>`).join('')||'<tr><td class="mut">Sin movimientos</td></tr>'}</tbody></table></div></div>
-    <div class="card"><h3>Transferencias recibidas — verificación</h3><p class="mut" style="margin:4px 0 8px">Marque cada transferencia al confirmarla en la app del banco. ${Object.entries(r.porBanco).map(([b,t])=>`<b>${esc(b)}:</b> ${money(t)}`).join(' · ')}</p>
-      <div class="tbl-wrap" style="max-height:220px"><table class="t"><thead><tr><th>✔</th><th>Tirilla</th><th>Hora</th><th>Banco</th><th>N° transf.</th><th class="r">Monto</th></tr></thead><tbody>
-      ${r.transfers.map(({v,p,i})=>`<tr><td><input type="checkbox" data-tv="${v.id}" data-ti="${i}" ${p.verificado?'checked':''} style="width:auto"></td><td>#${v.numero}</td><td>${fhr(v.fecha)}</td><td>${esc(p.banco)}</td><td class="b">${esc(p.ref)}</td><td class="r">${money(p.monto)}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">Sin transferencias</td></tr>'}</tbody></table></div></div></div>
-    <div class="card section"><h3>Arqueo y cierre</h3><p class="mut">Cuente el dinero del cajón por denominación.</p>
-      <div class="denoms">${DENOMS.map(d=>`<label>${money(d)} × cantidad<input data-den="${d}" inputmode="numeric" placeholder="0"></label>`).join('')}</div>
-      <div class="kpis" style="margin-top:12px"><div class="kpi"><small>Contado</small><div id="aqC">$0</div></div><div class="kpi"><small>Esperado</small><div>${money(r.esperado)}</div></div><div class="kpi"><small>Diferencia</small><div id="aqD">$0</div></div></div>
-      <label>Observaciones<textarea id="aqObs" rows="2"></textarea></label><div class="row" style="margin-top:10px"><button class="btn" id="aqPre" style="flex:0">Imprimir pre-cierre (X)</button><button class="btn dan" id="aqClose" style="flex:0">Cerrar caja e imprimir (Z)</button></div></div>
-    <div class="card section"><h3>Consolidado de tirillas del turno</h3><div class="tbl-wrap" style="max-height:300px"><table class="t"><thead><tr><th>#</th><th>Hora</th><th>Cliente</th><th>Medio</th><th>Doc</th><th class="r">Total</th></tr></thead><tbody>
-      ${r.ventas.map(v=>`<tr><td>${v.numero}</td><td>${fhr(v.fecha)}</td><td>${esc(v.cliente?v.cliente.nombre:'—')}</td><td>${medioTxt(v)}</td><td>${docPill(v)}</td><td class="r">${money(v.total)}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">Sin ventas</td></tr>'}</tbody></table></div></div>`}
-  if(otras.length)html+=`<div class="card section"><h3>Otras cajas abiertas</h3><table class="t"><tbody>${otras.map(o=>{const r=cajaResumen(o);return`<tr><td>#${o.numero}</td><td>${esc(o.usuarioNombre)}</td><td>${esc(o.terminal)}</td><td>${fdt(o.apertura)}</td><td class="r">${money(r.totalVentas)}</td><td class="r">Esperado ${money(r.esperado)}</td></tr>`}).join('')}</tbody></table></div>`;
-  html+=`<div class="card"><h3>Historial de cierres</h3><div class="tbl-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>#</th><th>Cajero</th><th>Apertura</th><th>Cierre</th><th class="r">Ventas</th><th class="r">Esperado</th><th class="r">Contado</th><th class="r">Diferencia</th><th></th></tr></thead><tbody>
-    ${hist.map(h=>`<tr><td>${h.numero}</td><td>${esc(h.usuarioNombre)}</td><td>${fdt(h.apertura)}</td><td>${fdt(h.cierre)}</td><td class="r">${money(h.resumen?h.resumen.totalVentas:0)}</td><td class="r">${money(h.esperado)}</td><td class="r">${money(h.contado)}</td><td class="r ${h.diferencia<0?'err':(h.diferencia>0?'warn':'ok')} b">${money(h.diferencia)}</td><td><button class="btn sm" data-z="${h.id}">Reimprimir Z</button></td></tr>`).join('')||'<tr><td colspan="9" class="mut">Sin cierres</td></tr>'}</tbody></table></div></div>`;
-  v.innerHTML=html;
-  $('#cjOpen')&&($('#cjOpen').onclick=()=>openCajaModal(renderCaja));
-  $$('[data-z]').forEach(b=>b.onclick=()=>printZ(DB.get('cajas',b.dataset.z)));
-  if(!c)return;
-  const r=cajaResumen(c);
+const BILLETES=[100000,50000,20000,10000,5000,2000],MONEDAS=[1000,500,200,100,50];
+let cajaTab='mia';
+const esCiego=()=>cfg().cierreCiego!==false&&!can('admin_caja');
+function snapCaja(caja){const r=cajaResumen(caja);return{totalVentas:r.totalVentas,efectivo:r.efectivo,transf:r.transf,tarjeta:r.tarjeta,devEf:r.devEf,ingresos:r.ingresos,egresos:r.egresos,porBanco:r.porBanco,
+  tirillas:r.ventas.length,pos:r.pos,fe:r.fe,desde:r.ventas[0]?r.ventas[0].numero:null,hasta:r.ventas.length?r.ventas[r.ventas.length-1].numero:null}}
+const difPill=d=>Math.abs(d)<1?'<span class="pill ok">✔ Cuadrada</span>':(d<0?`<span class="pill err">Faltante ${money(-d)}</span>`:`<span class="pill warn">Sobrante ${money(d)}</span>`);
+function renderCaja(){const adm=can('admin_caja');
+  const abiertas=DB.all('cajas').filter(x=>x.estado==='abierta'),desc=DB.all('descuadres').filter(d=>d.estado==='pendiente'&&(adm||d.usuario===USER.id));
+  const tabs=[['mia','💵 Mi caja'],...(adm?[['abiertas','🗂️ Cajas abiertas ('+abiertas.length+')']]:[]),['hist','📚 Historial de cierres'],['desc','⚠️ Descuadres'+(desc.length?' ('+desc.length+')':'')]];
+  if(!tabs.some(t=>t[0]===cajaTab))cajaTab='mia';
+  $('#view').innerHTML=`<div class="page-head"><h2>Apertura y cierre de caja</h2></div><div class="tabs" id="cjT">${tabs.map(([k,t])=>`<button data-t="${k}" class="${k===cajaTab?'on':''}">${t}</button>`).join('')}</div><div id="cjB"></div>`;
+  $$('#cjT button').forEach(b=>b.onclick=()=>{cajaTab=b.dataset.t;renderCaja()});
+  ({mia:drawMiCaja,abiertas:drawCajasAbiertas,hist:drawHistCajas,desc:drawDescuadres})[cajaTab]()}
+function drawMiCaja(){const c=cajaAbierta(),B=$('#cjB');
+  if(!c){B.innerHTML=`<div class="card section" style="text-align:center;padding:30px"><div style="font-size:40px">💵</div><h3>No tiene caja abierta</h3><p class="mut">Abra la caja ingresando la base para poder vender.</p><button class="btn pri big" style="max-width:320px" id="cjOpen">Abrir caja</button></div>`;
+    $('#cjOpen').onclick=()=>openCajaModal(renderCaja);return}
+  const r=cajaResumen(c),ciego=esCiego();
+  B.innerHTML=`<div class="card section" style="border-left:5px solid var(--acc)"><div class="row" style="align-items:center"><div style="flex:3"><h3 style="margin:0">Caja #${c.numero} · ${esc(c.terminal)}</h3><span class="mut">${esc(c.usuarioNombre)} · abierta ${fdt(c.apertura)} · base ${money(c.base)}</span></div>
+     <button class="btn dan big" id="cjClose" style="flex:0 0 auto;width:auto">🔒 Cerrar caja</button></div></div>
+   <div class="kpis"><div class="kpi"><small>Ventas del turno</small><div>${money(r.totalVentas)}</div><em>${r.ventas.length} tirillas (${r.pos} POS · ${r.fe} FE)</em></div><div class="kpi"><small>Transferencias</small><div>${r.transfers.length}</div><em>${ciego?'se verifican al cerrar':money(r.transf)}</em></div>
+    ${ciego?'':`<div class="kpi"><small>Efectivo ventas</small><div>${money(r.efectivo)}</div></div><div class="kpi"><small>Tarjeta</small><div>${money(r.tarjeta)}</div></div><div class="kpi" style="border-color:var(--pri)"><small>Efectivo esperado (con base)</small><div style="color:var(--pri)">${money(r.esperado)}</div><em>sin base ${money(r.esperado-c.base)}</em></div>`}
+    <div class="kpi"><small>Ingresos / egresos</small><div>${money(r.ingresos)} / <span class="err">${money(r.egresos)}</span></div></div></div>
+   <div class="grid2 section"><div class="card"><h3>Ingresos y egresos de caja</h3><div class="row" style="margin-top:10px"><label style="max-width:150px">Tipo<select id="mvT"><option value="egreso">Egreso / retiro</option><option value="ingreso">Ingreso</option></select></label><label>Concepto<input id="mvC" placeholder="Pago proveedor, retiro parcial…"></label><label style="max-width:130px">Valor<input id="mvV" inputmode="numeric"></label><button class="btn" id="mvB">Registrar</button></div>
+     <div class="tbl-wrap" style="margin-top:10px;max-height:200px"><table class="t"><tbody>${(c.movs||[]).map(m=>`<tr><td>${fhr(m.fecha)}</td><td>${m.tipo==='ingreso'?'<span class="pill ok">Ingreso</span>':'<span class="pill err">Egreso</span>'}</td><td>${esc(m.concepto)}</td><td class="r">${money(m.monto)}</td><td class="mut">${esc(m.autorizo||'')}</td></tr>`).join('')||'<tr><td class="mut">Sin movimientos</td></tr>'}</tbody></table></div></div>
+    <div class="card"><h3>Transferencias recibidas</h3><p class="mut" style="margin:4px 0 8px">Puede ir marcando cada transferencia al confirmarla en la app del banco; al cerrar se revisan todas.</p>
+     <div class="tbl-wrap" style="max-height:230px"><table class="t"><thead><tr><th>✔</th><th>Tirilla</th><th>Hora</th><th>Banco</th><th>N° transf.</th><th class="r">Monto</th></tr></thead><tbody>
+     ${r.transfers.map(({v,p,i})=>`<tr><td><input type="checkbox" data-tv="${v.id}" data-ti="${i}" ${p.verificado?'checked':''} style="width:auto"></td><td>#${v.numero}</td><td>${fhr(v.fecha)}</td><td>${esc(p.banco)}</td><td class="b">${esc(p.ref)}</td><td class="r">${money(p.monto)}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">Sin transferencias</td></tr>'}</tbody></table></div></div></div>
+   <div class="card section"><div class="row" style="align-items:center"><h3 style="flex:1">Tirillas del turno</h3>${ciego?'':'<button class="btn" id="cjX" style="flex:0 0 auto">🖨️ Pre-cierre (X)</button>'}</div><div class="tbl-wrap" style="max-height:300px;margin-top:8px"><table class="t"><thead><tr><th>#</th><th>Hora</th><th>Cliente</th><th>Medio</th><th>Doc</th><th class="r">Total</th></tr></thead><tbody>
+     ${r.ventas.map(v=>`<tr><td>${v.numero}</td><td>${fhr(v.fecha)}</td><td>${esc(v.cliente?v.cliente.nombre:'—')}</td><td>${medioTxt(v)}</td><td>${docPill(v)}</td><td class="r">${money(v.total)}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">Sin ventas</td></tr>'}</tbody></table></div></div>`;
+  $('#cjClose').onclick=()=>cerrarCajaWizard(c);
+  $('#cjX')&&($('#cjX').onclick=()=>printZ({...c,resumen:snapCaja(c),esperado:r.esperado,cierre:new Date().toISOString()},true));
   $('#mvB').onclick=async()=>{const monto=nval($('#mvV').value),concepto=$('#mvC').value.trim(),tipo=$('#mvT').value;if(!monto||!concepto)return toast('Concepto y valor obligatorios','err');
     const a=tipo==='egreso'?await askAdmin('Autorizar egreso de '+money(monto)):USER;if(!a)return;
     c.movs=c.movs||[];c.movs.push({fecha:new Date().toISOString(),tipo,concepto,monto,usuario:USER.nombre,autorizo:a.nombre});DB.put('cajas',c);renderCaja()};
-  $$('[data-tv]').forEach(ch=>ch.onchange=()=>{const v=DB.get('ventas',ch.dataset.tv);v.pagos[+ch.dataset.ti].verificado=ch.checked;DB.put('ventas',v)});
-  const count=()=>{let t=0;$$('[data-den]').forEach(i=>t+=nval(i.value)*+i.dataset.den);$('#aqC').textContent=money(t);const d=t-r.esperado;const el=$('#aqD');el.textContent=money(d);el.className=d<0?'err':(d>0?'warn':'ok');return t};
-  $$('[data-den]').forEach(i=>i.oninput=count);
-  const snapshot=()=>({...c,resumen:{totalVentas:r.totalVentas,efectivo:r.efectivo,transf:r.transf,tarjeta:r.tarjeta,devEf:r.devEf,ingresos:r.ingresos,egresos:r.egresos,porBanco:r.porBanco,tirillas:r.ventas.length,pos:r.pos,fe:r.fe,
-    desde:r.ventas[0]?r.ventas[0].numero:null,hasta:r.ventas.length?r.ventas[r.ventas.length-1].numero:null,noVerif:r.transfers.filter(x=>!x.p.verificado).length},
-    esperado:r.esperado,contado:count(),diferencia:count()-r.esperado,denoms:Object.fromEntries($$('[data-den]').map(i=>[i.dataset.den,nval(i.value)])),obs:$('#aqObs').value});
-  $('#aqPre').onclick=()=>printZ({...snapshot(),cierre:new Date().toISOString()},true);
-  $('#aqClose').onclick=async()=>{const s=snapshot();
-    if(s.resumen.noVerif&&!(await confirmBox(`Hay ${s.resumen.noVerif} transferencias sin verificar. ¿Cerrar de todas formas?`)))return;
-    if(!(await confirmBox(`Cerrar caja #${c.numero}. Contado ${money(s.contado)} · Esperado ${money(s.esperado)} · Diferencia <b>${money(s.diferencia)}</b>`,'Cerrar caja')))return;
-    const fin=DB.put('cajas',{...s,estado:'cerrada',cierre:new Date().toISOString()});toast('Caja cerrada');printZ(fin);updateBadges();renderCaja()}}
-function printZ(c,pre){const r=c.resumen||{};
+  $$('[data-tv]').forEach(ch=>ch.onchange=()=>{const v=DB.get('ventas',ch.dataset.tv);v.pagos[+ch.dataset.ti].verificado=ch.checked;DB.put('ventas',v)})}
+function drawCajasAbiertas(){const L=DB.all('cajas').filter(x=>x.estado==='abierta').sort((a,b)=>a.numero-b.numero);
+  $('#cjB').innerHTML=`<div class="tbl-wrap"><table class="t"><thead><tr><th>Caja</th><th>Usuario</th><th>Terminal</th><th>Abierta</th><th class="r">Ventas</th><th class="r">Efectivo esperado</th><th class="r">Transferencias</th><th class="r">Tarjeta</th><th></th></tr></thead><tbody>
+   ${L.map(c=>{const r=cajaResumen(c);return`<tr><td class="b">#${c.numero}</td><td>${esc(c.usuarioNombre)}</td><td>${esc(c.terminal)}</td><td>${fdt(c.apertura)}</td><td class="r">${money(r.totalVentas)}<br><small class="mut">${r.ventas.length} tirillas</small></td><td class="r b">${money(r.esperado)}<br><small class="mut">sin base ${money(r.esperado-c.base)}</small></td><td class="r">${money(r.transf)}</td><td class="r">${money(r.tarjeta)}</td><td><button class="btn sm dan" data-cc="${c.id}">🔒 Cerrar</button></td></tr>`}).join('')||'<tr><td colspan="9" class="empty">No hay cajas abiertas</td></tr>'}</tbody></table></div>
+   <p class="mut">El administrador puede cerrar la caja de cualquier cajero (por ejemplo, al final del turno, con el cajero presente).</p>`;
+  $$('[data-cc]').forEach(b=>b.onclick=()=>cerrarCajaWizard(DB.get('cajas',b.dataset.cc)))}
+// ---- Asistente de cierre (ciego, por usuario) ----
+function cerrarCajaWizard(caja){
+  const S={paso:1,den:{},tarjeta:'',verif:{},obs:'',cargar:true};const r0=cajaResumen(caja);
+  r0.transfers.forEach(({v,i,p})=>S.verif[v.id+'_'+i]=!!p.verificado);
+  const m=Modal.open({wide:true,title:`🔒 Cierre de caja #${caja.numero} · ${esc(caja.usuarioNombre)}`,body:`<div id="czStep"></div>`,footer:`<div id="czFoot" style="display:flex;gap:8px;width:100%;justify-content:flex-end;flex-wrap:wrap"></div>`});
+  const el=m.el,contado=()=>DENOMS.reduce((a,d)=>a+(+S.den[d]||0)*d,0);
+  const pasos=['Contar efectivo','Transferencias y datáfono','Resultado'];
+  const head=()=>`<div style="display:flex;gap:6px;margin-bottom:6px">${pasos.map((t,i)=>`<div style="flex:1;padding:8px;border-radius:8px;text-align:center;font-size:12px;font-weight:700;background:${i+1===S.paso?'var(--pri)':(i+1<S.paso?'#e1f4e8':'#eef2f1')};color:${i+1===S.paso?'#fff':(i+1<S.paso?'var(--ok)':'var(--mut)')}">${i+1<S.paso?'✔':(i+1)+'.'} ${t}</div>`).join('')}</div>`;
+  const foot=(btns)=>{$('#czFoot',el).innerHTML=btns;};
+  const calc=()=>{const r=cajaResumen(caja);let tv=0,tnv=0;const noV=[];r.transfers.forEach(({v,p,i})=>{if(S.verif[v.id+'_'+i])tv+=p.monto;else{tnv+=p.monto;noV.push({numero:v.numero,banco:p.banco,ref:p.ref,monto:p.monto})}});
+    const cont=contado(),difEf=cont-r.esperado,tDecl=r.tarjeta?(S.tarjeta===''?r.tarjeta:nval(S.tarjeta)):0,difTc=tDecl-r.tarjeta,difTr=-tnv;
+    return{r,cont,difEf,tv,tnv,noV,tDecl,difTc,difTr,total:Math.round(difEf+difTr+difTc)}};
+  const step1=()=>{$('#czStep',el).innerHTML=head()+`<p style="margin:4px 0 10px">Cuente <b>todo el dinero del cajón</b> (incluida la base) e ingrese la cantidad de cada billete y moneda.${esCiego()?' <span class="mut">El valor esperado se mostrará al final.</span>':''}</p>
+      <div class="grid2"><div><h4 style="margin-top:0">💵 Billetes</h4><div class="denoms" style="grid-template-columns:repeat(2,1fr)">${BILLETES.map(d=>`<label>${money(d)} ×<input data-den="${d}" inputmode="numeric" value="${S.den[d]||''}" placeholder="0"></label>`).join('')}</div></div>
+       <div><h4 style="margin-top:0">🪙 Monedas</h4><div class="denoms" style="grid-template-columns:repeat(2,1fr)">${MONEDAS.map(d=>`<label>${money(d)} ×<input data-den="${d}" inputmode="numeric" value="${S.den[d]||''}" placeholder="0"></label>`).join('')}</div></div></div>
+      <div class="paybig" style="margin-top:12px">Contado: <span id="czTot">${money(contado())}</span></div>`;
+    $$('[data-den]',el).forEach(i=>i.oninput=()=>{S.den[i.dataset.den]=nval(i.value);$('#czTot',el).textContent=money(contado())});
+    foot(`<button class="btn" data-x>Cancelar</button><button class="btn pri" data-n>Siguiente →</button>`);$('[data-x]',el).onclick=()=>Modal.close(m);
+    $('[data-n]',el).onclick=async()=>{if(!contado()&&!(await confirmBox('El conteo de efectivo está en $0. ¿Continuar?','Continuar')))return;S.paso=2;render()};setTimeout(()=>{const f=$('[data-den]',el);f&&f.focus()},50)};
+  const step2=()=>{const r=cajaResumen(caja);
+    $('#czStep',el).innerHTML=head()+`<h4 style="margin-top:4px">📲 Transferencias (${r.transfers.length})</h4><p class="mut" style="margin:0 0 8px">Marque cada transferencia que <b>sí está en la cuenta</b> (revise la app del banco). Las no marcadas se cuentan como faltante.</p>
+      ${r.transfers.length?`<div class="row" style="margin-bottom:6px"><button class="btn sm" id="czAll" style="flex:0 0 auto">Marcar todas</button></div><div class="tbl-wrap" style="max-height:280px"><table class="t"><thead><tr><th>✔ Llegó</th><th>Tirilla</th><th>Hora</th><th>Banco</th><th>N° transf.</th><th class="r">Monto</th></tr></thead><tbody>
+      ${r.transfers.map(({v,p,i})=>`<tr><td><input type="checkbox" data-vk="${v.id}_${i}" ${S.verif[v.id+'_'+i]?'checked':''} style="width:22px;height:22px"></td><td>#${v.numero}</td><td>${fhr(v.fecha)}</td><td>${esc(p.banco)}</td><td class="b">${esc(p.ref)}</td><td class="r">${money(p.monto)}</td></tr>`).join('')}</tbody></table></div>`:'<p class="mut">No hubo transferencias en este turno.</p>'}
+      ${r.tarjeta?`<h4>💳 Datáfono</h4><label style="max-width:320px">Total según el cierre del datáfono (vouchers)<input id="czTc" inputmode="numeric" value="${esc(S.tarjeta)}" placeholder="${esCiego()?'Digite el total':money(r.tarjeta)}"></label>`:''}`;
+    $$('[data-vk]',el).forEach(c=>c.onchange=()=>S.verif[c.dataset.vk]=c.checked);$('#czAll',el)&&($('#czAll',el).onclick=()=>{$$('[data-vk]',el).forEach(c=>{c.checked=true;S.verif[c.dataset.vk]=true})});
+    $('#czTc',el)&&($('#czTc',el).oninput=()=>S.tarjeta=$('#czTc',el).value);
+    foot(`<button class="btn" data-b>← Atrás</button><button class="btn pri" data-n>Ver resultado →</button>`);$('[data-b]',el).onclick=()=>{S.paso=1;render()};$('[data-n]',el).onclick=()=>{S.paso=3;render()}};
+  const step3=()=>{const X=calc(),r=X.r,cuadra=Math.abs(X.total)<1;const base=+caja.base||0;
+    const row=(a,b,cls='')=>`<tr><td>${a}</td><td class="r ${cls}">${b}</td></tr>`;
+    $('#czStep',el).innerHTML=head()+`<div style="text-align:center;padding:14px;border-radius:12px;margin-bottom:12px;background:${cuadra?'#e1f4e8':(X.total<0?'#fbe4e1':'#fff1d6')}">
+        <div style="font-size:13px;font-weight:700;color:var(--mut)">RESULTADO DEL CIERRE DE ${esc(caja.usuarioNombre.toUpperCase())}</div>
+        <div style="font-size:30px;font-weight:800;color:${cuadra?'var(--ok)':(X.total<0?'var(--err)':'#8a5a00')}">${cuadra?'✔ CAJA CUADRADA':(X.total<0?'FALTANTE '+money(-X.total):'SOBRANTE '+money(X.total))}</div></div>
+      <div class="grid2"><div class="card"><h4 style="margin-top:0">🧾 Ventas de ${esc(caja.usuarioNombre)}</h4><table class="t"><tbody>
+          ${row('Tirillas',`${r.ventas.length}${r.ventas.length?' (#'+r.ventas[0].numero+' a #'+r.ventas[r.ventas.length-1].numero+')':''}`)}${row('Total vendido','<b>'+money(r.totalVentas)+'</b>')}${row('En efectivo',money(r.efectivo))}${row('Por transferencia',money(r.transf))}${Object.entries(r.porBanco).map(([b,v])=>row('&nbsp;&nbsp;· '+esc(b),money(v),'mut')).join('')}${row('Con tarjeta',money(r.tarjeta))}${r.devEf?row('Devoluciones','−'+money(r.devEf),'err'):''}</tbody></table></div>
+        <div class="card"><h4 style="margin-top:0">💵 Efectivo</h4><table class="t"><tbody>${row('Base inicial',money(base))}${row('+ Ventas en efectivo',money(r.efectivo))}${r.devEf?row('− Devoluciones',money(r.devEf)):''}${r.ingresos?row('+ Ingresos',money(r.ingresos)):''}${r.egresos?row('− Egresos / retiros',money(r.egresos)):''}
+          ${row('<b>Debe haber en el cajón (con base)</b>','<b>'+money(r.esperado)+'</b>')}${row('<b>Contado</b>','<b>'+money(X.cont)+'</b>')}${row('<b>Diferencia en efectivo</b>','<b>'+money(X.difEf)+'</b>',Math.abs(X.difEf)<1?'ok':'err')}</tbody></table>
+          <div class="kpis" style="grid-template-columns:1fr 1fr;margin:10px 0 0"><div class="kpi"><small>Base que queda en caja</small><div>${money(Math.min(base,X.cont))}</div></div><div class="kpi" style="border-color:var(--pri)"><small>Efectivo a entregar (sin base)</small><div style="color:var(--pri)">${money(Math.max(0,X.cont-base))}</div><em>debía entregar ${money(Math.max(0,r.esperado-base))}</em></div></div></div></div>
+      <div class="grid2" style="margin-top:10px"><div class="card"><h4 style="margin-top:0">📲 Transferencias</h4><table class="t"><tbody>${row('Registradas en ventas',money(r.transf))}${row('Verificadas en el banco',money(X.tv),'ok')}${row('No verificadas',money(X.tnv),X.tnv?'err':'')}</tbody></table>
+          ${X.noV.length?`<small class="err">Sin verificar: ${X.noV.map(n=>'#'+n.numero+' '+esc(n.banco)+' '+esc(n.ref)+' ('+money(n.monto)+')').join(' · ')}</small>`:''}</div>
+        ${r.tarjeta?`<div class="card"><h4 style="margin-top:0">💳 Datáfono</h4><table class="t"><tbody>${row('Según ventas',money(r.tarjeta))}${row('Según vouchers',money(X.tDecl))}${row('Diferencia',money(X.difTc),Math.abs(X.difTc)<1?'ok':'err')}</tbody></table></div>`:'<div></div>'}</div>
+      ${cuadra?'':`<div class="card" style="margin-top:10px;border:2px solid ${X.total<0?'var(--err)':'var(--warn)'}"><h4 style="margin-top:0">Cerrar con descuadre</h4>
+        <label>Observación (obligatoria)<textarea id="czObs" rows="2" placeholder="Explique el descuadre: billete falso, transferencia pendiente, error de cambio…">${esc(S.obs)}</textarea></label>
+        ${X.total<0?`<label class="chk" style="margin-top:8px"><input type="checkbox" id="czCar" ${S.cargar?'checked':''}> Cargar el faltante de ${money(-X.total)} a <b>${esc(caja.usuarioNombre)}</b> (queda pendiente en «Descuadres»)</label>`:''}
+        <small class="mut">Requiere clave de administrador.</small></div>`}`;
+    const o=$('#czObs',el);o&&(o.oninput=()=>S.obs=o.value);const cr=$('#czCar',el);cr&&(cr.onchange=()=>S.cargar=cr.checked);
+    foot(`<button class="btn" data-b>← Atrás</button><button class="btn" data-x>Cancelar</button><button class="btn ${cuadra?'pri':'dan'}" data-ok>${cuadra?'✔ Cerrar caja e imprimir':'⚠ Cerrar con descuadre'}</button>`);
+    $('[data-b]',el).onclick=()=>{S.paso=2;render()};$('[data-x]',el).onclick=()=>Modal.close(m);
+    $('[data-ok]',el).onclick=async()=>{let au=null;
+      if(!cuadra){if(!S.obs.trim())return toast('Escriba la observación del descuadre','err');au=await askAdmin(`Cerrar caja #${caja.numero} de ${caja.usuarioNombre} con ${X.total<0?'faltante':'sobrante'} de ${money(Math.abs(X.total))}`);if(!au)return}
+      else if(!(await confirmBox(`¿Cerrar la caja #${caja.numero} de ${esc(caja.usuarioNombre)}? Entrega ${money(Math.max(0,X.cont-(+caja.base||0)))} sin base.`,'Cerrar caja')))return;
+      // marcar transferencias verificadas
+      X.r.transfers.forEach(({v,i})=>{const vv=DB.get('ventas',v.id);if(vv&&vv.pagos[i]){vv.pagos[i].verificado=!!S.verif[v.id+'_'+i];DB.put('ventas',vv)}});
+      const now=new Date().toISOString();let dId=null;
+      if(!cuadra&&X.total<0&&S.cargar){const d=DB.put('descuadres',{numero:nextNum('descConsecutivo'),fecha:now,cajaId:caja.id,cajaNumero:caja.numero,usuario:caja.usuario,usuarioNombre:caja.usuarioNombre,monto:X.total,difEf:X.difEf,difTr:X.difTr,difTc:X.difTc,noVerif:X.noV,obs:S.obs.trim(),autorizo:au?au.nombre:'',cerro:USER.nombre,estado:'pendiente'});dId=d.id}
+      const fin=DB.put('cajas',{...caja,estado:'cerrada',cierre:now,cerroPor:USER.nombre,resumen:snapCaja(caja),esperado:X.r.esperado,contado:X.cont,diferencia:Math.round(X.difEf),denoms:Object.fromEntries(DENOMS.map(d=>[d,+S.den[d]||0])),
+        baseQueda:Math.min(+caja.base||0,X.cont),entregado:Math.max(0,X.cont-(+caja.base||0)),transfVerif:X.tv,transfNoVerif:X.tnv,noVerif:X.noV,tarjetaDecl:X.tDecl,difTarjeta:X.difTc,descuadre:X.total,obs:S.obs.trim(),autorizo:au?au.nombre:'',descuadreId:dId});
+      Modal.close(m);toast(cuadra?'Caja #'+caja.numero+' cerrada y cuadrada ✔':'Caja #'+caja.numero+' cerrada con descuadre de '+money(X.total),cuadra?'ok':'warn',6000);printZ(fin);updateBadges();renderCaja()}};
+  const render=()=>[step1,step2,step3][S.paso-1]();render()}
+function drawHistCajas(){const adm=can('admin_caja');
+  const us=[...new Set(DB.all('cajas').map(c=>c.usuarioNombre))].sort();
+  $('#cjB').innerHTML=`<div class="toolbar">${adm?`<label>Usuario<select id="hcU"><option value="">Todos</option>${us.map(u=>`<option>${esc(u)}</option>`).join('')}</select></label>`:''}<label>Desde<input type="date" id="hcD" value="${addDays(ymd(new Date()),-30)}"></label><label>Hasta<input type="date" id="hcH" value="${ymd(new Date())}"></label><label>Resultado<select id="hcR"><option value="">Todos</option><option value="ok">Cuadradas</option><option value="desc">Con descuadre</option></select></label></div><div id="hcO"></div>`;
+  const run=()=>{const u=adm?$('#hcU').value:USER.nombre,d=$('#hcD').value,h=$('#hcH').value,rs=$('#hcR').value;
+    const L=DB.all('cajas').filter(c=>c.estado==='cerrada'&&(!u||c.usuarioNombre===u)&&(adm||c.usuario===USER.id)&&ymd(c.cierre)>=d&&ymd(c.cierre)<=h).filter(c=>{const ds=c.descuadre??c.diferencia??0;return !rs||(rs==='ok'?Math.abs(ds)<1:Math.abs(ds)>=1)}).sort((a,b)=>b.numero-a.numero);
+    const tv=L.reduce((a,c)=>a+((c.resumen||{}).totalVentas||0),0),td=L.reduce((a,c)=>a+(c.descuadre??c.diferencia??0),0);
+    $('#hcO').innerHTML=`<div class="kpis"><div class="kpi"><small>Cierres</small><div>${L.length}</div></div><div class="kpi"><small>Ventas</small><div>${money(tv)}</div></div><div class="kpi"><small>Descuadre neto</small><div class="${td<0?'err':(td>0?'warn':'ok')}">${money(td)}</div></div><div class="kpi"><small>Con descuadre</small><div>${L.filter(c=>Math.abs(c.descuadre??c.diferencia??0)>=1).length}</div></div></div>
+     <div class="tbl-wrap"><table class="t"><thead><tr><th>#</th><th>Usuario</th><th>Apertura</th><th>Cierre</th><th class="r">Ventas</th><th class="r">Efectivo esperado</th><th class="r">Contado</th><th class="r">Entregado sin base</th><th class="r">Transf. sin verificar</th><th>Resultado</th><th></th></tr></thead><tbody>
+     ${L.map(c=>`<tr><td>${c.numero}</td><td class="b">${esc(c.usuarioNombre)}${c.cerroPor&&c.cerroPor!==c.usuarioNombre?'<br><small class="mut">cerró '+esc(c.cerroPor)+'</small>':''}</td><td>${fdt(c.apertura)}</td><td>${fdt(c.cierre)}</td><td class="r">${money((c.resumen||{}).totalVentas)}</td><td class="r">${money(c.esperado)}</td><td class="r">${money(c.contado)}</td><td class="r">${c.entregado!=null?money(c.entregado):'—'}</td><td class="r ${c.transfNoVerif?'err':''}">${c.transfNoVerif?money(c.transfNoVerif):'—'}</td>
+       <td>${difPill(c.descuadre??c.diferencia??0)}${c.obs?'<br><small class="mut">'+esc(c.obs)+'</small>':''}</td><td><button class="btn sm" data-z="${c.id}">Reimprimir Z</button></td></tr>`).join('')||'<tr><td colspan="11" class="empty">Sin cierres en el período</td></tr>'}</tbody></table></div>`;
+    $$('[data-z]').forEach(b=>b.onclick=()=>printZ(DB.get('cajas',b.dataset.z)))};
+  ['hcU','hcD','hcH','hcR'].forEach(id=>{const e=$('#'+id);e&&(e.onchange=run)});run()}
+const DESC_EST={pendiente:'<span class="pill err">Pendiente</span>',descontado:'<span class="pill ok">Descontado / pagado</span>',justificado:'<span class="pill">Justificado</span>'};
+function drawDescuadres(){const adm=can('admin_caja');const all=DB.all('descuadres').filter(d=>adm||d.usuario===USER.id).sort((a,b)=>b.numero-a.numero);
+  const pend={};all.filter(d=>d.estado==='pendiente').forEach(d=>{const x=pend[d.usuarioNombre]||(pend[d.usuarioNombre]={n:0,v:0});x.n++;x.v+=d.monto});
+  $('#cjB').innerHTML=`<div class="kpis">${Object.entries(pend).map(([u,x])=>`<div class="kpi" style="border-color:var(--err)"><small>${esc(u)}</small><div class="err">${money(-x.v)}</div><em>${x.n} descuadres pendientes</em></div>`).join('')||'<div class="kpi"><small>Pendientes</small><div class="ok">$0</div><em>sin descuadres por cobrar</em></div>'}</div>
+   <div class="toolbar">${adm?`<label>Usuario<select id="dsU"><option value="">Todos</option>${[...new Set(all.map(d=>d.usuarioNombre))].map(u=>`<option>${esc(u)}</option>`).join('')}</select></label>`:''}<label>Estado<select id="dsE"><option value="pendiente">Pendientes</option><option value="">Todos</option><option value="descontado">Descontados / pagados</option><option value="justificado">Justificados</option></select></label><button class="btn" id="dsX">Exportar CSV</button></div><div id="dsO"></div>`;
+  let L=[];
+  const run=()=>{const u=adm?$('#dsU').value:'',e=$('#dsE').value;L=all.filter(d=>(!u||d.usuarioNombre===u)&&(!e||d.estado===e));
+    $('#dsO').innerHTML=`<div class="tbl-wrap"><table class="t"><thead><tr><th>#</th><th>Fecha</th><th>Usuario</th><th>Caja</th><th class="r">Faltante</th><th>Detalle</th><th>Observación</th><th>Autorizó</th><th>Estado</th>${adm?'<th></th>':''}</tr></thead><tbody>
+    ${L.map(d=>`<tr><td>${d.numero}</td><td>${fdt(d.fecha)}</td><td class="b">${esc(d.usuarioNombre)}</td><td>#${d.cajaNumero}</td><td class="r err b">${money(-d.monto)}</td>
+      <td><small>${Math.abs(d.difEf)>=1?'Efectivo '+money(d.difEf)+'<br>':''}${d.difTr?'Transf. sin verificar '+money(-d.difTr)+'<br>':''}${Math.abs(d.difTc||0)>=1?'Datáfono '+money(d.difTc):''}</small></td><td><small>${esc(d.obs)}</small></td><td><small>${esc(d.autorizo)}</small></td><td>${DESC_EST[d.estado]}${d.resuelto?'<br><small class="mut">'+fdt(d.resuelto)+' · '+esc(d.resolvio||'')+'</small>':''}</td>
+      ${adm?`<td style="white-space:nowrap">${d.estado==='pendiente'?`<button class="btn sm" data-ok="${d.id}">Descontado / pagado</button> <button class="btn sm" data-ju="${d.id}">Justificar</button>`:''}</td>`:''}</tr>`).join('')||'<tr><td colspan="10" class="empty">Sin descuadres</td></tr>'}</tbody></table></div>`;
+    const set=async(id,est)=>{const d=DB.get('descuadres',id);const nota=est==='justificado'?await askText('Justificación','Por qué se justifica el descuadre'):'';if(est==='justificado'&&!nota)return;const a=await askAdmin((est==='descontado'?'Marcar como descontado/pagado':'Justificar')+' el descuadre de '+money(-d.monto)+' de '+d.usuarioNombre);if(!a)return;
+      Object.assign(d,{estado:est,resuelto:new Date().toISOString(),resolvio:a.nombre,nota:nota||d.nota});DB.put('descuadres',d);toast('Descuadre actualizado');renderCaja()};
+    $$('[data-ok]').forEach(b=>b.onclick=()=>set(b.dataset.ok,'descontado'));$$('[data-ju]').forEach(b=>b.onclick=()=>set(b.dataset.ju,'justificado'))};
+  $('#dsE').onchange=run;$('#dsU')&&($('#dsU').onchange=run);
+  $('#dsX').onclick=()=>downloadCSV('descuadres',[['Numero','Fecha','Usuario','Caja','Faltante','Efectivo','TransfSinVerificar','Datafono','Observacion','Autorizo','Estado'],...L.map(d=>[d.numero,fdt(d.fecha),d.usuarioNombre,d.cajaNumero,-d.monto,d.difEf,-d.difTr,d.difTc,d.obs,d.autorizo,d.estado])]);run()}
+function askText(title,label){return new Promise(res=>{let done=false;const m=Modal.open({title,body:`<label>${esc(label)}<textarea id="atx" rows="3" autofocus></textarea></label>`,footer:`<button class="btn" data-c>Cancelar</button><button class="btn pri" data-ok>Aceptar</button>`,onClose:()=>{if(!done)res(null)}});
+  $('[data-c]',m.el).onclick=()=>Modal.close(m);$('[data-ok]',m.el).onclick=()=>{const v=$('#atx',m.el).value.trim();if(!v)return;done=true;Modal.close(m);res(v)}})}
+function printZ(c,pre){const r=c.resumen||{};const ds=c.descuadre??c.diferencia??0;const base=+c.base||0;
   printHTML(`<div class="c b big">${esc(cfg().negocio)}</div><div class="c">NIT ${esc(cfg().nit)}</div><hr><div class="b big c">${pre?'PRE-CIERRE (X)':'CIERRE DE CAJA (Z)'}</div>
-  <div>Caja #${c.numero} · ${esc(c.terminal)}</div><div>Cajero: ${esc(c.usuarioNombre)}</div><div>Apertura: ${fdt(c.apertura)}</div><div>Cierre: ${fdt(c.cierre)}</div><hr>
-  <table><tr><td>Tirillas</td><td class="r">${r.tirillas||0} (${r.pos||0} POS/${r.fe||0} FE)</td></tr><tr><td>Desde - hasta</td><td class="r">${r.desde||'-'} - ${r.hasta||'-'}</td></tr>
-  <tr><td class="b">VENTAS TOTALES</td><td class="r b">${money(r.totalVentas)}</td></tr><tr><td>Efectivo</td><td class="r">${money(r.efectivo)}</td></tr><tr><td>Transferencias</td><td class="r">${money(r.transf)}</td></tr>
+  <div>Caja #${c.numero} · ${esc(c.terminal)}</div><div>Cajero: ${esc(c.usuarioNombre)}</div>${c.cerroPor&&c.cerroPor!==c.usuarioNombre?`<div>Cerró: ${esc(c.cerroPor)}</div>`:''}<div>Apertura: ${fdt(c.apertura)}</div><div>Cierre: ${fdt(c.cierre)}</div><hr>
+  <div class="b">VENTAS DEL CAJERO</div><table><tr><td>Tirillas</td><td class="r">${r.tirillas||0} (${r.pos||0} POS/${r.fe||0} FE)</td></tr><tr><td>Desde - hasta</td><td class="r">${r.desde||'-'} - ${r.hasta||'-'}</td></tr>
+  <tr><td class="b">TOTAL VENTAS</td><td class="r b">${money(r.totalVentas)}</td></tr><tr><td>Efectivo</td><td class="r">${money(r.efectivo)}</td></tr><tr><td>Transferencias</td><td class="r">${money(r.transf)}</td></tr>
   ${Object.entries(r.porBanco||{}).map(([b,t])=>`<tr><td>&nbsp; ${esc(b)}</td><td class="r">${money(t)}</td></tr>`).join('')}<tr><td>Tarjeta</td><td class="r">${money(r.tarjeta)}</td></tr></table><hr>
-  <table><tr><td>Base</td><td class="r">${money(c.base)}</td></tr><tr><td>+ Efectivo ventas</td><td class="r">${money(r.efectivo)}</td></tr><tr><td>− Devoluciones</td><td class="r">${money(r.devEf)}</td></tr>
-  <tr><td>+ Ingresos</td><td class="r">${money(r.ingresos)}</td></tr><tr><td>− Egresos</td><td class="r">${money(r.egresos)}</td></tr><tr><td class="b">ESPERADO</td><td class="r b">${money(c.esperado)}</td></tr>
-  <tr><td class="b">CONTADO</td><td class="r b">${money(c.contado)}</td></tr><tr><td class="b">DIFERENCIA</td><td class="r b">${money(c.diferencia)}</td></tr></table><hr>
-  <table>${Object.entries(c.denoms||{}).filter(([,n])=>n).map(([d,n])=>`<tr><td>${money(d)} x ${n}</td><td class="r">${money(d*n)}</td></tr>`).join('')}</table>
+  <div class="b">EFECTIVO</div><table><tr><td>Base</td><td class="r">${money(base)}</td></tr><tr><td>+ Ventas efectivo</td><td class="r">${money(r.efectivo)}</td></tr><tr><td>- Devoluciones</td><td class="r">${money(r.devEf)}</td></tr>
+  <tr><td>+ Ingresos</td><td class="r">${money(r.ingresos)}</td></tr><tr><td>- Egresos</td><td class="r">${money(r.egresos)}</td></tr><tr><td class="b">DEBE HABER (con base)</td><td class="r b">${money(c.esperado)}</td></tr>
+  <tr><td class="b">DEBE ENTREGAR (sin base)</td><td class="r b">${money(Math.max(0,(c.esperado||0)-base))}</td></tr>${pre?'':`<tr><td class="b">CONTADO</td><td class="r b">${money(c.contado)}</td></tr><tr><td>Base que queda</td><td class="r">${money(c.baseQueda??Math.min(base,c.contado||0))}</td></tr><tr><td class="b">ENTREGA (sin base)</td><td class="r b">${money(c.entregado??Math.max(0,(c.contado||0)-base))}</td></tr><tr><td class="b">DIF. EFECTIVO</td><td class="r b">${money(c.diferencia)}</td></tr>`}</table>
+  ${pre?'':`<hr><div class="b">TRANSFERENCIAS</div><table><tr><td>Verificadas</td><td class="r">${money(c.transfVerif??r.transf)}</td></tr><tr><td>Sin verificar</td><td class="r">${money(c.transfNoVerif||0)}</td></tr></table>${(c.noVerif||[]).map(n=>`<div>#${n.numero} ${esc(n.banco)} ${esc(n.ref)} ${money(n.monto)}</div>`).join('')}
+  ${r.tarjeta?`<hr><table><tr><td>Datáfono vouchers</td><td class="r">${money(c.tarjetaDecl)}</td></tr><tr><td>Dif. datáfono</td><td class="r">${money(c.difTarjeta||0)}</td></tr></table>`:''}
+  <hr><div class="big b c">${Math.abs(ds)<1?'CAJA CUADRADA':(ds<0?'FALTANTE '+money(-ds):'SOBRANTE '+money(ds))}</div>${c.descuadreId?`<div class="c">Cargado a ${esc(c.usuarioNombre)}</div>`:''}${c.autorizo?`<div>Autorizó: ${esc(c.autorizo)}</div>`:''}
+  <hr><table>${Object.entries(c.denoms||{}).filter(([,n])=>n).map(([d,n])=>`<tr><td>${money(d)} x ${n}</td><td class="r">${money(d*n)}</td></tr>`).join('')}</table>`}
   ${c.obs?`<hr><div>Obs: ${esc(c.obs)}</div>`:''}<br><br><div>Firma cajero: ____________</div><br><div>Firma admin: ____________</div><div class="c">.</div>`)}
 
 /* =====================================================================
@@ -1678,10 +1764,11 @@ function cfCaja(box){const c=cfg();
    <div class="grid2"><label>Próximo N° de tirilla<input id="cCons" type="number" value="${c.consecutivo}"></label><label>Próximo N° de devolución<input id="cDev" type="number" value="${c.devConsecutivo}"></label></div>
    <label>Bancos / billeteras para transferencias (separados por coma)<input id="cB" value="${esc(c.bancos.join(', '))}"></label>
    <label class="chk"><input type="checkbox" id="cAP" ${c.autoPrint?'checked':''}> Imprimir tirilla automáticamente al cobrar</label>
+   <label class="chk"><input type="checkbox" id="cCC" ${c.cierreCiego!==false?'checked':''}> Cierre ciego: el cajero cuenta el efectivo sin ver cuánto debería haber</label>
    <label class="chk"><input type="checkbox" id="cNeg" ${c.permitirNegativo?'checked':''}> Permitir vender sin existencias (inventario negativo)</label>
    <label class="chk"><input type="checkbox" id="cPA" ${c.precioRequiereAdmin?'checked':''}> Cambiar precio (F11) requiere clave de administrador</label>
    <div class="row"><button class="btn pri" id="cSave">Guardar</button></div></div>`;
-  $('#cSave').onclick=()=>{saveCfg({consecutivo:+$('#cCons').value||1,devConsecutivo:+$('#cDev').value||1,bancos:$('#cB').value.split(',').map(x=>x.trim()).filter(Boolean),autoPrint:$('#cAP').checked,permitirNegativo:$('#cNeg').checked,precioRequiereAdmin:$('#cPA').checked});toast('Guardado')}}
+  $('#cSave').onclick=()=>{saveCfg({consecutivo:+$('#cCons').value||1,devConsecutivo:+$('#cDev').value||1,bancos:$('#cB').value.split(',').map(x=>x.trim()).filter(Boolean),autoPrint:$('#cAP').checked,cierreCiego:$('#cCC').checked,permitirNegativo:$('#cNeg').checked,precioRequiereAdmin:$('#cPA').checked});toast('Guardado')}}
 
 function cfSiigo(box){const s=cfg().siigo;
   box.innerHTML=`<div class="card cfg-sec"><h3>Facturación electrónica · Siigo</h3><p class="mut" style="margin:0">Las credenciales de Siigo (usuario y access key) <b>no</b> se guardan aquí: van como secretos en la Edge Function <code>siigo-proxy</code> de Supabase. Aquí solo van los IDs de su cuenta.</p>
