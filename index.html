@@ -147,7 +147,29 @@ table.cart tr{cursor:pointer}
 .stk b{display:block;font-size:22px}
 .mact{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 @media(max-width:1000px){.pos{grid-template-columns:1fr}.pos-side{order:-1}.keys{grid-template-columns:repeat(3,1fr)}.total-box .tt{font-size:30px}}
-@media(max-width:760px){.who .nm,.who .btn.mode,#cajaBadge{display:none}header.top{gap:8px;padding:0 10px}.grid2,.grid3{grid-template-columns:1fr}.charts{grid-template-columns:1fr}main#view{padding:10px}}
+/* menú lateral (celular / tablet) */
+.hamb{display:none;background:transparent;border:0;color:#fff;font-size:26px;line-height:1;padding:4px 6px;cursor:pointer}
+.drawer-ov{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:900;display:none}
+.drawer{position:fixed;top:0;left:0;bottom:0;width:290px;max-width:86vw;background:#fff;z-index:901;transform:translateX(-102%);transition:transform .2s ease;overflow-y:auto;display:flex;flex-direction:column;box-shadow:4px 0 24px rgba(0,0,0,.2)}
+body.dopen .drawer{transform:none}body.dopen .drawer-ov{display:block}
+.drawer .dh{background:var(--pri);color:#fff;padding:16px 18px}.drawer .dh b{font-size:16px}
+.drawer a{padding:13px 18px;border-bottom:1px solid #eef2f1;color:var(--ink);text-decoration:none;font-weight:600;font-size:15px;display:flex;gap:12px;align-items:center}
+.drawer a .ic{width:24px;text-align:center;font-size:18px}
+.drawer a.on{background:#eef4f2;color:var(--pri);box-shadow:inset 4px 0 0 var(--acc)}
+.drawer .df{padding:12px 18px;display:flex;flex-direction:column;gap:8px;margin-top:auto;border-top:1px solid var(--line)}
+@media(max-width:1100px){.hamb{display:block}nav.nav{display:none}header.top{justify-content:space-between}}
+@media(max-width:760px){.who .nm,.who .btn.mode,#cajaBadge{display:none}header.top{gap:8px;padding:0 10px}.grid2,.grid3{grid-template-columns:1fr!important}.charts{grid-template-columns:1fr}main#view{padding:10px}
+  .page-head{flex-direction:column;align-items:stretch}.page-head>.row,.page-head .row{flex-wrap:wrap!important;flex:1 1 auto!important}.page-head .btn,.page-head label.btn{flex:1 1 auto}
+  .toolbar>label,.toolbar>div{min-width:calc(50% - 8px)!important;flex:1 1 calc(50% - 8px)}.toolbar>.btn{flex:1 1 auto}
+  .row>*{min-width:100px}.card{padding:12px;overflow-x:auto}.tbl-wrap{max-height:none}.tbl-wrap table.t{min-width:680px}
+  .kpis{grid-template-columns:repeat(2,1fr)}.kpi{padding:10px}.kpi div{font-size:17px}
+  .tabs button{padding:8px 10px;font-size:13px}.modal,.modal.wide{width:100%}.ov{padding:2vh 6px}.mb{padding:12px}
+  .scanbar input{font-size:17px;padding:10px}table.cart{font-size:13px}table.cart td,table.cart th{padding:6px}
+  .pos-side .keys{grid-template-columns:repeat(2,1fr)}.keys button{font-size:12px;padding:8px 6px}.total-box .tt{font-size:30px}
+  .denoms{grid-template-columns:repeat(2,1fr)}h2{font-size:18px}
+  .row[style*="nowrap"]{flex-wrap:wrap!important}.row[style*="nowrap"]>*{flex:1 1 auto}
+  .pos{height:auto;display:flex;flex-direction:column}.pos-side{order:2}.pos-main{order:1}.cart-wrap{min-height:180px;max-height:52vh}.keys{overflow:visible}
+  .pos-side .total-box{position:sticky;bottom:0;z-index:5}}
 /* print */
 #print-area{display:none}
 @media print{
@@ -486,16 +508,22 @@ const ROUTES={
 };
 let ROUTE='pos',charts=[];
 function layout(){
-  $('#app').innerHTML=`<header class="top"><div class="brand">Mini<span>POS</span></div><nav class="nav" id="nav"></nav>
+  $('#app').innerHTML=`<header class="top"><button class="hamb" onclick="toggleDrawer()" aria-label="Menú">☰</button><div class="brand">Mini<span>POS</span></div><nav class="nav" id="nav"></nav>
   <div class="who"><span id="syncBadge"></span><span id="cajaBadge"></span><span class="nm">${esc(USER.nombre)} · ${ROLES[USER.rol]}</span>${USER.rol!=='cajero'?`<button class="btn mode" onclick="toggleModoCaja()" title="Muestra solo las opciones de caja">${modoCaja()?'⚙ Administración':'🧾 Modo caja'}</button>`:''}<button class="btn" onclick="logout()">Salir</button></div></header><main id="view"></main>`;
   $('#nav').innerHTML=Object.entries(ROUTES).filter(([k,r])=>can(r.min)&&!r.hide&&(!modoCaja()||r.caja)).map(([k,r])=>`<a href="#/${k}" data-r="${k}">${r.t}</a>`).join('');
+  $('#app').insertAdjacentHTML('beforeend',`<div class="drawer-ov" onclick="toggleDrawer(false)"></div><aside class="drawer" id="drawer"><div class="dh"><b>Mini<span style="color:var(--acc)">POS</span></b><br><small>${esc(USER.nombre)} · ${ROLES[USER.rol]}</small></div>
+    ${Object.entries(ROUTES).filter(([k,r])=>can(r.min)&&(!modoCaja()||r.caja||k==='movil')).map(([k,r])=>`<a href="#/${k}" data-r="${k}" onclick="toggleDrawer(false)"><span class="ic">${ICONOS[k]||'•'}</span>${k==='movil'?'Escáner celular (contar / ajustar)':r.t}</a>`).join('')}
+    <div class="df">${USER.rol!=='cajero'?`<button class="btn" onclick="toggleDrawer(false);toggleModoCaja()">${modoCaja()?'⚙ Ver todo (administración)':'🧾 Modo caja'}</button>`:''}<button class="btn" onclick="logout()">Salir</button></div></aside>`);
   updateBadges()}
+const ICONOS={pos:'🛒',caja:'💵',ventas:'📊',inventario:'📦',conteos:'📋',novedades:'⚠️',recepcion:'🚚',traslados:'⇄',sugeridos:'📝',analisis:'📈',clientes:'👤',usuarios:'🔐',config:'⚙️',movil:'📱'};
+function toggleDrawer(v){document.body.classList.toggle('dopen',v)}
 function go(){
   if(!USER)return renderLogin();
   if(!$('#view'))layout();
   let r=location.hash.replace('#/','')||'pos';if(!ROUTES[r]||!can(ROUTES[r].min))r='pos';if(modoCaja()&&!ROUTES[r].caja&&r!=='movil')r='pos';
   ROUTE=r;charts.forEach(c=>c.destroy());charts=[];stopScanner();
   $$('#nav a').forEach(a=>a.classList.toggle('on',a.dataset.r===r));
+  $$('#drawer a').forEach(a=>a.classList.toggle('on',a.dataset.r===r));document.body.classList.remove('dopen');
   ROUTES[r].r()}
 window.addEventListener('hashchange',go);
 // Cajero: solo ve caja. Administradores pueden cambiar a «Modo caja» para vender con el menú limpio.
@@ -1802,7 +1830,7 @@ function drawTomas(){const list=DB.all('conteos').sort((a,b)=>b.numero-a.numero)
   ${list.map(c=>{const its=conteoItems(c.id);const n=c.pids.filter(pid=>tomaContado(its.find(i=>i.pid===pid),c)).length;
     return`<tr><td class="b">${c.numero}</td><td>${esc(c.nombre)}</td><td>${UBIC[c.ubic]}</td><td>${fdt(c.fecha)}</td><td>${esc(c.usuario)}</td><td class="r">${n} / ${c.pids.length} (${pct(c.pids.length?n/c.pids.length:0)})</td>
     <td>${c.estado==='abierta'?'<span class="pill warn">Abierta</span>':'<span class="pill ok">Cerrada '+fdt(c.cerrada)+'</span>'}</td><td><button class="btn sm ${c.estado==='abierta'?'pri':''}" data-o="${c.id}">${c.estado==='abierta'?'Contar':'Ver'}</button></td></tr>`}).join('')||'<tr><td colspan="8" class="empty">Aún no hay tomas. Cree una con «+ Nueva toma».</td></tr>'}</tbody></table></div>
-  <p class="mut">Desde el celular: entre al menú 📱 Celular, elija la toma abierta y escanee producto por producto. Los conteos aparecen aquí en tiempo real (con Supabase).</p>`;
+  <p class="mut">Desde el celular: abra el menú ☰ → «Escáner celular», elija la toma abierta y escanee producto por producto. Los conteos aparecen aquí en tiempo real (con Supabase).</p>`;
   $$('[data-o]').forEach(b=>b.onclick=()=>{tomaAbierta=b.dataset.o;renderConteos()})}
 function newTomaModal(){
   let sel=[];
