@@ -475,7 +475,7 @@ const ROUTES={
   inventario:{t:'Inventario',min:'admin_caja',r:()=>renderInventario()},
   conteos:{t:'Toma de inventario',min:'admin_caja',r:()=>renderConteos()},
   novedades:{t:'Averías y bajas',min:'admin_caja',r:()=>renderNovedades()},
-  recepcion:{t:'Facturas de compra',min:'admin_caja',r:()=>renderRecepcion()},
+  recepcion:{t:'Compras',min:'admin_caja',r:()=>renderRecepcion()},
   traslados:{t:'Traslados y menudeo',min:'admin_caja',r:()=>renderTraslados()},
   sugeridos:{t:'Sugeridos',min:'admin_caja',r:()=>renderSugeridos()},
   analisis:{t:'Análisis',min:'admin_caja',r:()=>renderAnalisis()},
@@ -824,9 +824,88 @@ function printZ(c,pre){const r=c.resumen||{};
 /* =====================================================================
    VENTAS (historial, anulación, Siigo)
    ===================================================================== */
-function renderVentas(){
+/* =====================================================================
+   VENTAS: resumen (hoy, ayer, semana, mes, año) e informes completos
+   ===================================================================== */
+let vTab='resumen',vInf={tipo:'dia',desde:'',hasta:'',empresa:'',linea:''};
+function renderVentas(){if(!can('admin_caja'))vTab='docs';
+  $('#view').innerHTML=`${can('admin_caja')?`<div class="tabs" id="vTabs">${[['resumen','📊 Resumen de ventas'],['informes','📑 Informes de ventas'],['docs','🧾 Documentos (tirillas y facturas)']].map(([k,t])=>`<button data-t="${k}" class="${k===vTab?'on':''}">${t}</button>`).join('')}</div>`:''}<div id="vBody"></div>`;
+  $$('#vTabs button').forEach(b=>b.onclick=()=>{vTab=b.dataset.t;renderVentas()});({resumen:renderVentasRes,informes:renderVentasInf,docs:renderVentasDocs})[vTab]()}
+function resumenPeriodo(desde,hasta){let t=0,ef=0,tr=0,tc=0,c=0,u=0,n=0;const bancos={};
+  DB.all('ventas').forEach(v=>{if(v.estado==='anulada')return;const d=ymd(v.fecha);if(d<desde||d>hasta)return;n++;t+=v.total;v.items.forEach(i=>{c+=i.costo*i.cant;u+=i.pesable?1:i.cant});
+    v.pagos.forEach(p=>{if(p.medio==='efectivo')ef+=p.monto;else if(p.medio==='tarjeta')tc+=p.monto;else{tr+=p.monto;bancos[p.banco||'Otro']=(bancos[p.banco||'Otro']||0)+p.monto}})});
+  let dev=0,devC=0;DB.all('devoluciones').forEach(d=>{const x=ymd(d.fecha);if(x<desde||x>hasta)return;dev+=d.total;d.items.forEach(i=>devC+=i.costo*i.cant)});
+  return{total:t-dev,bruto:t,dev,n,ef:ef-dev,tr,tc,bancos,util:t-dev-(c-devC),u,prom:n?(t-dev)/n:0}}
+const varPct=(a,b)=>b?`<span class="${a>=b?'ok':'err'} b">${a>=b?'▲':'▼'} ${pct(Math.abs(a-b)/b)}</span>`:'';
+function renderVentasRes(){const hoy=ymd(new Date()),d=new Date();
+  const lunes=addDays(hoy,-((d.getDay()+6)%7)),mesIni=hoy.slice(0,8)+'01',mesAntIni=ymd(new Date(d.getFullYear(),d.getMonth()-1,1)),mesAntFin=ymd(new Date(d.getFullYear(),d.getMonth(),0));
+  const mesAntMismo=ymd(new Date(d.getFullYear(),d.getMonth()-1,Math.min(d.getDate(),new Date(d.getFullYear(),d.getMonth(),0).getDate())));
+  const P=[['Hoy',hoy,hoy,'vs ayer',addDays(hoy,-1),addDays(hoy,-1)],['Ayer',addDays(hoy,-1),addDays(hoy,-1),'vs antier',addDays(hoy,-2),addDays(hoy,-2)],
+    ['Esta semana',lunes,hoy,'vs semana pasada (mismos días)',addDays(lunes,-7),addDays(hoy,-7)],['Este mes',mesIni,hoy,'vs mes pasado (mismos días)',mesAntIni,mesAntMismo],
+    ['Mes pasado',mesAntIni,mesAntFin,'',null,null],['Este año',hoy.slice(0,4)+'-01-01',hoy,'',null,null],['Todo el historial','2000-01-01',hoy,'',null,null]];
+  const card=([t,a,b,ct,ca,cb])=>{const r=resumenPeriodo(a,b),cmp=ca?resumenPeriodo(ca,cb):null;
+    return`<div class="card" style="padding:14px"><div class="row" style="justify-content:space-between;align-items:center"><b style="flex:0 0 auto">${t}</b><small class="mut" style="text-align:right">${a===b?a:a+' → '+b}</small></div>
+      <div style="font-size:26px;font-weight:800;margin:6px 0">${money(r.total)}</div><div class="mut" style="font-size:12px">${r.n} ventas · ticket ${money(r.prom)} · utilidad ${money(r.util)}${cmp?'<br>'+ct+': '+money(cmp.total)+' '+varPct(r.total,cmp.total):''}</div>
+      <table class="t" style="margin-top:8px;font-size:12px"><tbody><tr><td>💵 Efectivo</td><td class="r">${money(r.ef)}</td></tr><tr><td>📲 Transferencias</td><td class="r">${money(r.tr)}</td></tr>${Object.entries(r.bancos).map(([k,v])=>`<tr><td class="mut">&nbsp;&nbsp;${esc(k)}</td><td class="r mut">${money(v)}</td></tr>`).join('')}<tr><td>💳 Tarjeta</td><td class="r">${money(r.tc)}</td></tr>${r.dev?`<tr><td class="err">↩ Devoluciones</td><td class="r err">−${money(r.dev)}</td></tr>`:''}</tbody></table></div>`};
+  const dias=[];for(let i=13;i>=0;i--){const x=addDays(hoy,-i);dias.push([x,resumenPeriodo(x,x)])}
+  const mx=Math.max(1,...dias.map(x=>x[1].total));
+  $('#vBody').innerHTML=`<div class="page-head"><h2>Resumen de ventas</h2><small class="mut">Ventas netas (descontando devoluciones y anulaciones)</small></div>
+   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px">${P.map(card).join('')}</div>
+   <div class="card" style="margin-top:12px"><h3>Últimos 14 días</h3><div style="display:flex;align-items:flex-end;gap:6px;height:170px;margin-top:10px">${dias.map(([x,r])=>`<div style="flex:1;text-align:center;font-size:10px" title="${x}: ${money(r.total)} · ${r.n} ventas"><div style="font-size:10px;color:var(--mut)">${r.total>=1e6?(r.total/1e6).toFixed(1)+'M':Math.round(r.total/1e3)+'k'}</div><div style="height:${Math.round(r.total/mx*120)}px;background:${x===hoy?'var(--acc)':'var(--pri)'};border-radius:4px 4px 0 0"></div><div>${x.slice(8)}/${x.slice(5,7)}</div></div>`).join('')}</div></div>`}
+const INF_TIPOS={dia:'Por día',mes:'Por mes',linea:'Por línea',empresa:'Por proveedor / empresa',producto:'Por producto',medio:'Por medio de pago',cajero:'Por cajero',global:'Global (resumen completo)'};
+function informeVentas(desde,hasta,tipo,fl){const G={};const okIt=it=>(!fl.empresa||it.empresa===fl.empresa)&&(!fl.linea||it.linea===fl.linea);
+  const g=(k,lab)=>G[k]||(G[k]={k,lab:lab||k,tk:0,u:0,v:0,c:0,ef:0,tr:0,tc:0});
+  DB.all('ventas').forEach(v=>{if(v.estado==='anulada')return;const d=ymd(v.fecha);if(d<desde||d>hasta)return;const its=v.items.filter(okIt);if(!its.length)return;
+    const vt=its.reduce((a,i)=>a+i.precio*i.cant,0),r=v.total?vt/v.total:0;
+    if(['dia','mes','cajero','global'].includes(tipo)){const k=tipo==='dia'?d:(tipo==='mes'?d.slice(0,7):(tipo==='cajero'?v.usuarioNombre:'Total'));const x=g(k);x.tk++;
+      its.forEach(i=>{x.u+=i.pesable?1:i.cant*i.factor;x.v+=i.precio*i.cant;x.c+=i.costo*i.cant});v.pagos.forEach(p=>{if(p.medio==='efectivo')x.ef+=p.monto*r;else if(p.medio==='tarjeta')x.tc+=p.monto*r;else x.tr+=p.monto*r})}
+    else if(tipo==='medio'){v.pagos.forEach(p=>{const k=p.medio==='efectivo'?'Efectivo':(p.medio==='tarjeta'?'Tarjeta '+(p.banco||''):'Transferencia '+(p.banco||''));const x=g(k);x.tk++;x.v+=p.monto*r;x.c+=its.reduce((a,i)=>a+i.costo*i.cant,0)*(v.total?p.monto/v.total:0)})}
+    else{const seen=new Set();its.forEach(i=>{const k=tipo==='linea'?(i.linea||'—'):(tipo==='empresa'?(i.empresa||'—'):i.pid);const x=g(k,tipo==='producto'?i.nombre:k);if(!seen.has(k)){x.tk++;seen.add(k)}x.u+=i.pesable?i.cant:i.cant*i.factor;x.v+=i.precio*i.cant;x.c+=i.costo*i.cant;if(tipo==='producto'){x.cod=i.codigo;x.linea=i.linea;x.emp=i.empresa}})}});
+  DB.all('devoluciones').forEach(dv=>{const d=ymd(dv.fecha);if(d<desde||d>hasta)return;dv.items.filter(okIt).forEach(i=>{const k=tipo==='dia'?d:(tipo==='mes'?d.slice(0,7):(tipo==='global'?'Total':(tipo==='linea'?(i.linea||'—'):(tipo==='empresa'?(i.empresa||'—'):(tipo==='producto'?i.pid:(tipo==='medio'?'Efectivo':null))))));if(!k||!G[k])return;
+    const x=G[k];x.v-=i.precio*i.cant;x.c-=i.costo*i.cant;x.u-=i.pesable?i.cant:i.cant*i.factor;x.dev=(x.dev||0)+i.precio*i.cant;if(['dia','mes','global'].includes(tipo))x.ef-=i.precio*i.cant})});
+  const rows=Object.values(G);const tot=rows.reduce((a,x)=>a+x.v,0);rows.forEach(x=>x.part=tot?x.v/tot:0);
+  rows.sort((a,b)=>['dia','mes'].includes(tipo)?a.k.localeCompare(b.k):b.v-a.v);return{rows,tot}}
+function renderVentasInf(){const hoy=ymd(new Date()),S=vInf;if(!S.desde){S.desde=hoy.slice(0,8)+'01';S.hasta=hoy}
+  $('#vBody').innerHTML=`<div class="page-head"><h2>Informes de ventas</h2><div class="row" style="flex:0;flex-wrap:nowrap"><button class="btn" id="viP">🖨️ Imprimir informe</button><button class="btn" id="viX">Exportar CSV</button></div></div>
+   <div class="toolbar"><label>Informe<select id="viT">${Object.entries(INF_TIPOS).map(([k,v])=>`<option value="${k}" ${k===S.tipo?'selected':''}>${v}</option>`).join('')}</select></label>
+    <label>Desde<input type="date" id="viD" value="${S.desde}"></label><label>Hasta<input type="date" id="viH" value="${S.hasta}"></label>
+    <div class="row" style="flex:0;flex-wrap:nowrap;gap:4px">${[['Hoy','hoy'],['Ayer','ayer'],['Semana','sem'],['Mes','mes'],['Mes pasado','mant'],['Año','ano'],['Todo','todo']].map(([t,k])=>`<button class="btn sm" data-pr="${k}">${t}</button>`).join('')}</div>
+    <label>Proveedor<select id="viE"><option value="">Todos</option>${empresas().map(e=>`<option ${e===S.empresa?'selected':''}>${esc(e)}</option>`).join('')}</select></label><label>Línea<select id="viL"></select></label></div><div id="viO"></div>`;
+  const fillL=()=>{const ls=[...new Set(prods().filter(p=>!S.empresa||p.empresa===S.empresa).map(p=>p.linea).filter(Boolean))].sort();if(!ls.includes(S.linea))S.linea='';$('#viL').innerHTML=`<option value="">Todas</option>`+ls.map(l=>`<option ${l===S.linea?'selected':''}>${esc(l)}</option>`).join('')};fillL();
+  let last=null;
+  const run=()=>{S.tipo=$('#viT').value;S.desde=$('#viD').value;S.hasta=$('#viH').value;S.empresa=$('#viE').value;S.linea=$('#viL').value;
+    const filt=[S.empresa,S.linea].filter(Boolean).join(' · ');
+    if(S.tipo==='global'){const fl={empresa:S.empresa,linea:S.linea};const R=informeVentas(S.desde,S.hasta,'global',fl).rows[0]||{tk:0,u:0,v:0,c:0,ef:0,tr:0,tc:0,dev:0};const res=resumenPeriodo(S.desde,S.hasta);
+      const dias=daysBetween(S.desde,S.hasta),L=informeVentas(S.desde,S.hasta,'linea',fl),E=informeVentas(S.desde,S.hasta,'empresa',fl),M=informeVentas(S.desde,S.hasta,'medio',fl);
+      const kv=[['Venta neta',money(R.v)],['Devoluciones',money(R.dev||0)],['Costo de lo vendido',money(R.c)],['Utilidad bruta',money(R.v-R.c)],['Margen',pct(R.v?(R.v-R.c)/R.v:0)],['Número de ventas (tickets)',num(R.tk,0)],['Ticket promedio',money(R.tk?R.v/R.tk:0)],['Unidades vendidas',num(R.u,0)],['Promedio por día',money(R.v/dias)],['Efectivo',money(R.ef)],['Transferencias',money(R.tr)],['Tarjeta',money(R.tc)]];
+      if(!filt)Object.entries(res.bancos).forEach(([b,v])=>kv.push(['  · '+b,money(v)]));
+      const sub=(t,x)=>`<div class="card"><h4 style="margin-top:0">${t}</h4><table class="t"><tbody>${x.rows.slice(0,12).map(r=>`<tr><td>${esc(r.lab)}</td><td class="r">${money(r.v)}</td><td class="r mut">${pct(r.part)}</td></tr>`).join('')}</tbody></table></div>`;
+      last={h:['Concepto','Valor'],rows:kv,titulo:'Informe global de ventas'};
+      $('#viO').innerHTML=`<div class="grid2"><div class="card"><h3>Global ${filt?'· '+esc(filt):''} · ${S.desde} a ${S.hasta}</h3><table class="t" style="margin-top:8px"><tbody>${kv.map(([a,b])=>`<tr><td>${esc(a)}</td><td class="r b">${b}</td></tr>`).join('')}</tbody></table></div>
+        <div style="display:flex;flex-direction:column;gap:10px">${sub('Por línea',L)}${sub('Por proveedor',E)}${sub('Por medio de pago',M)}</div></div>`;return}
+    const {rows,tot}=informeVentas(S.desde,S.hasta,S.tipo,{empresa:S.empresa,linea:S.linea});
+    const pago=['dia','mes','cajero'].includes(S.tipo),prod=S.tipo==='producto';
+    const H=[INF_TIPOS[S.tipo].replace('Por ','').replace(/^\w/,c=>c.toUpperCase()),...(prod?['Código','Línea']:[]),S.tipo==='medio'?'Pagos':(pago?'Ventas':'Tickets'),...(S.tipo==='medio'?[]:['Unidades']),'Venta','Costo','Utilidad','Margen','% Part.',...(pago?['Efectivo','Transferencia','Tarjeta']:[])];
+    const R=rows.map(x=>[S.tipo==='dia'?x.k+' '+['dom','lun','mar','mié','jue','vie','sáb'][new Date(x.k+'T12:00').getDay()]:x.lab,...(prod?[x.cod,x.linea]:[]),x.tk,...(S.tipo==='medio'?[]:[num(x.u,2)]),money(x.v),money(x.c),money(x.v-x.c),pct(x.v?(x.v-x.c)/x.v:0),pct(x.part),...(pago?[money(x.ef),money(x.tr),money(x.tc)]:[])]);
+    const T=rows.reduce((a,x)=>({tk:a.tk+x.tk,u:a.u+x.u,v:a.v+x.v,c:a.c+x.c,ef:a.ef+x.ef,tr:a.tr+x.tr,tc:a.tc+x.tc}),{tk:0,u:0,v:0,c:0,ef:0,tr:0,tc:0});
+    const TR=['TOTAL',...(prod?['','']:[]),T.tk,...(S.tipo==='medio'?[]:[num(T.u,2)]),money(T.v),money(T.c),money(T.v-T.c),pct(T.v?(T.v-T.c)/T.v:0),'100%',...(pago?[money(T.ef),money(T.tr),money(T.tc)]:[])];
+    last={h:H,rows:[...R,TR],titulo:'Informe de ventas '+INF_TIPOS[S.tipo].toLowerCase()};
+    const right=i=>i>=(prod?3:1);
+    $('#viO').innerHTML=`<div class="kpis"><div class="kpi"><small>Venta neta</small><div>${money(T.v)}</div><em>${S.desde} a ${S.hasta}${filt?' · '+esc(filt):''}</em></div><div class="kpi"><small>Utilidad</small><div>${money(T.v-T.c)}</div><em>margen ${pct(T.v?(T.v-T.c)/T.v:0)}</em></div><div class="kpi"><small>${pago?'Ventas':'Registros'}</small><div>${rows.length&&pago?num(T.tk,0):rows.length}</div></div>${pago?`<div class="kpi"><small>Promedio por ${S.tipo==='mes'?'mes':(S.tipo==='dia'?'día':'cajero')}</small><div>${money(rows.length?T.v/rows.length:0)}</div></div>`:''}</div>
+      <div class="tbl-wrap" style="max-height:none"><table class="t"><thead><tr>${H.map((h,i)=>`<th class="${right(i)?'r':''}">${h}</th>`).join('')}</tr></thead><tbody>${R.map(r=>`<tr>${r.map((c,i)=>`<td class="${right(i)?'r':''}">${esc(c)}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${H.length}" class="empty">Sin ventas en el período</td></tr>`}
+      <tr style="background:#eef4f2">${TR.map((c,i)=>`<td class="b ${right(i)?'r':''}">${esc(c)}</td>`).join('')}</tr></tbody></table></div>`};
+  ['viT','viD','viH','viL'].forEach(id=>$('#'+id).onchange=run);$('#viE').onchange=()=>{S.empresa=$('#viE').value;fillL();run()};
+  $$('[data-pr]').forEach(b=>b.onclick=()=>{const d=new Date(),k=b.dataset.pr;let a=hoy,z=hoy;
+    if(k==='ayer')a=z=addDays(hoy,-1);else if(k==='sem')a=addDays(hoy,-((d.getDay()+6)%7));else if(k==='mes')a=hoy.slice(0,8)+'01';else if(k==='mant'){a=ymd(new Date(d.getFullYear(),d.getMonth()-1,1));z=ymd(new Date(d.getFullYear(),d.getMonth(),0))}else if(k==='ano')a=hoy.slice(0,4)+'-01-01';else if(k==='todo')a='2000-01-01';
+    $('#viD').value=a;$('#viH').value=z;run()});
+  $('#viX').onclick=()=>last&&downloadCSV('ventas_'+S.tipo+'_'+S.desde+'_'+S.hasta,[last.h,...last.rows]);
+  $('#viP').onclick=()=>{if(!last)return;const c=cfg();printSheet(`<div style="display:flex;justify-content:space-between"><div><h2 style="margin:0">${esc(c.negocio)}</h2><div>NIT ${esc(c.nit)}</div></div><div style="text-align:right"><h2 style="margin:0">${esc(last.titulo.toUpperCase())}</h2><div>${S.desde} a ${S.hasta}${S.empresa?' · '+esc(S.empresa):''}${S.linea?' · '+esc(S.linea):''}</div><div>Impreso ${fdt(new Date())}</div></div></div><br>
+    <table class="sh"><thead><tr>${last.h.map((h,i)=>`<th class="${i?'r':''}">${esc(h)}</th>`).join('')}</tr></thead><tbody>${last.rows.map(r=>`<tr>${r.map((x,i)=>`<td class="${i?'r':''}">${esc(x)}</td>`).join('')}</tr>`).join('')}</tbody></table>`)};
+  run()}
+
+function renderVentasDocs(){
   const hoy=ymd(new Date());
-  $('#view').innerHTML=`<div class="page-head"><h2>Ventas y documentos</h2><button class="btn" id="vExp">Exportar CSV</button></div>
+  $('#vBody').innerHTML=`<div class="page-head"><h2>Documentos de venta</h2><button class="btn" id="vExp">Exportar CSV</button></div>
   <div class="toolbar"><label>Desde<input type="date" id="vD" value="${hoy}"></label><label>Hasta<input type="date" id="vH" value="${hoy}"></label><label>N° / cliente<input id="vQ"></label>
   <label>Documento<select id="vT"><option value="">Todos</option><option value="POS">Tirilla POS</option><option value="FE">Factura electrónica</option><option value="FEP">FE pendiente / error</option><option value="AN">Anuladas</option></select></label></div><div id="vTbl"></div>`;
   const draw=()=>{const d=$('#vD').value,h=$('#vH').value,q=$('#vQ').value.toLowerCase(),t=$('#vT').value;
@@ -943,24 +1022,32 @@ function importCSV(){
    RECIBOS DE MERCANCÍA / BODEGA
    ===================================================================== */
 /* =====================================================================
-   INGRESO DE FACTURAS DE COMPRA (manual, XML/ZIP electrónica, PDF u OCR de foto)
-   Costo real con IVA / impoconsumo, rentabilidad y actualización de precios
+   COMPRAS: ingreso de facturas (manual, XML/ZIP, PDF, foto), fletes,
+   cruce de recibo (facturado vs recibido) y actualización de precios
    ===================================================================== */
-let fac=null;
-const facNew=()=>({empresa:'',numero:'',fecha:ymd(new Date()),ubic:'bodega',lines:[],totalDoc:'',fuente:'manual',raw:''});
+let fac=null,compTab='factura',reciboAbierto=null;
+const facNew=()=>({empresa:'',numero:'',fecha:ymd(new Date()),ubic:'bodega',lines:[],totalDoc:'',fuente:'manual',raw:'',flete:'',fleteMet:'unidades'});
 const TESS='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js',PDFJS='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',JSZIPJS='https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
 const dec=v=>+String(v??'').replace(/\s|%|\$/g,'').replace(',','.')||0;
+const FLETE_MET={unidades:'Por cantidad de unidades (equitativo)',valor:'Por valor de cada ítem',peso:'Por peso (kg)',ninguno:'No repartir'};
 function loadScript(src){return new Promise((res,rej)=>{if(loadScript[src])return res();const s=document.createElement('script');s.src=src;s.onload=()=>{loadScript[src]=1;res()};s.onerror=()=>rej(new Error('No se pudo cargar el lector ('+src.split('/').pop()+'). Revise la conexión a internet.'));document.head.appendChild(s)})}
-const actOf=(l,c)=>l.act!=null?!!l.act:(!c.actual||Math.round(c.pv)>c.actual);
 function facCfg(){const c=cfg();return{resp:c.responsableIVA!==false,margen:c.margenDefecto??20,metodo:c.metodoMargen||'venta',red:+c.redondeo||50,escalar:c.escalarPres!==false}}
-function calcLinea(l){const k=facCfg();const p=l.pid&&DB.get('productos',l.pid);const f=+l.factor||1,q=+l.cant||0,iva=+l.iva||0;
-  const base=(+l.costo||0)*(1-(+l.descP||0)/100),ivaU=base*iva/100,incU=+l.inc||0;
-  const costoU=base+incU+(k.resp?0:ivaU),costoBase=costoU/f,m=(l.margen!=null&&l.margen!==''?+l.margen:k.margen)/100;
+const recQ=l=>l.rec!=null&&l.rec!==''?+l.rec:(+l.cant||0);
+const pesoU=l=>{const p=l.pid&&DB.get('productos',l.pid);return l.peso!=null&&l.peso!==''?+l.peso:(p&&+p.peso||0)};
+// Reparte el flete por unidad base de cada línea (usa lo recibido)
+function repartirFlete(F){const fl=dec(F.flete),L=F.lines;L.forEach(l=>l._fu=0);if(!fl||F.fleteMet==='ninguno'||!L.length)return{ok:true};
+  const und=l=>recQ(l)*(+l.factor||1);let w=L.map(l=>F.fleteMet==='valor'?recQ(l)*(+l.costo||0)*(1-(+l.descP||0)/100):(F.fleteMet==='peso'?und(l)*pesoU(l):und(l)));
+  let tot=w.reduce((a,b)=>a+b,0),aviso='';if(!tot&&F.fleteMet==='peso'){aviso='Ningún ítem tiene peso: el flete se repartió por unidades.';w=L.map(und);tot=w.reduce((a,b)=>a+b,0)}
+  L.forEach((l,i)=>{const u=und(l);l._fu=tot&&u?fl*w[i]/tot/u:0});return{ok:true,aviso}}
+const actOf=(l,c)=>l.act!=null?!!l.act:(!c.actual||Math.round(c.pv)>c.actual);
+function calcLinea(l){const k=facCfg();const p=l.pid&&DB.get('productos',l.pid);const f=+l.factor||1,q=+l.cant||0,qR=recQ(l),iva=+l.iva||0;
+  const base=(+l.costo||0)*(1-(+l.descP||0)/100),ivaU=base*iva/100,incU=+l.inc||0,fu=+l._fu||0;
+  const costoU=base+incU+(k.resp?0:ivaU)+fu*f,costoBase=costoU/f,m=(l.margen!=null&&l.margen!==''?+l.margen:k.margen)/100;
   const sinIva=k.metodo==='venta'?(m<1?costoBase/(1-m):costoBase*2):costoBase*(1+m);
   const sug=Math.ceil((k.resp?sinIva*(1+iva/100):sinIva)/k.red)*k.red;
   const actual=p?+p.precio||0:0,pv=l.precioNuevo!=null&&l.precioNuevo!==''?+l.precioNuevo:sug;
   const net=x=>k.resp?x/(1+iva/100):x;const mgN=net(pv)?(net(pv)-costoBase)/net(pv):0,mgA=net(actual)?(net(actual)-costoBase)/net(actual):0;
-  return{p,f,q,base,ivaU,incU,costoU,costoBase,sug,actual,pv,mgN,mgA,sub:base*q,ivaT:ivaU*q,incT:incU*q,total:(base+ivaU+incU)*q,und:q*f}}
+  return{p,f,q,qR,dif:qR-q,base,ivaU,incU,fu,costoU,costoBase,sug,actual,pv,mgN,mgA,sub:base*q,ivaT:ivaU*q,incT:incU*q,total:(base+ivaU+incU)*q,und:qR*f,fleteT:fu*qR*f,valDif:(qR-q)*(base+ivaU+incU)}}
 function matchEmpresa(name){const n=norm(name);return empresas().find(e=>{const x=norm(e);return x.length>2&&(n.includes(x)||x.includes(n.split(' ')[0]))})||''}
 function matchLinea(l,emp){l.pid=null;l.match='';
   for(const c of [l.gtin,l.codFac].filter(Boolean)){const f=findByCode(c);if(f){l.pid=f.p.id;l.match='código';if(f.presIdx)l.factor=presList(f.p)[f.presIdx].factor;return}}
@@ -1011,33 +1098,36 @@ function searchPickModal(q,cb){let res=[];
   const m=Modal.open({wide:true,title:'Asociar con un producto del sistema',body:`<input id="spQ" value="${esc(q)}" autofocus><div class="list" id="spL" style="max-height:50vh"></div>`});
   const run=()=>{res=searchProducts($('#spQ',m.el).value,25);$('#spL',m.el).innerHTML=res.map((p,k)=>`<div class="it" data-k="${k}"><span><b>${esc(p.nombre)}</b> <small class="mut">${esc(p.codigo)} · ${esc(p.empresa)}</small></span><small>Costo ${money(p.costo)} · Precio ${money(p.precio)}</small></div>`).join('')||'<div class="empty">Sin resultados</div>'};
   $('#spQ',m.el).oninput=run;$('#spL',m.el).onclick=e=>{const it=e.target.closest('[data-k]');if(it){Modal.close(m);cb(res[+it.dataset.k])}};run()}
+const recPend=()=>DB.all('recepciones').filter(r=>r.estado==='pendiente').sort((a,b)=>b.numero-a.numero);
 function renderRecepcion(){
-  if(!fac){try{fac=JSON.parse(localStorage.getItem('minipos_fac'))}catch(e){}if(!fac)fac=facNew()}
+  if(reciboAbierto&&DB.get('recepciones',reciboAbierto))return renderRecibo(DB.get('recepciones',reciboAbierto));reciboAbierto=null;
+  const np=recPend().length;
+  $('#view').innerHTML=`<div class="page-head"><h2>Compras</h2></div><div class="tabs" id="cpT">${[['factura','📄 Ingresar factura'],['recibir','📦 Recibir mercancía'+(np?' ('+np+')':'')],['hist','📚 Facturas y novedades']].map(([k,t])=>`<button data-t="${k}" class="${k===compTab?'on':''}">${t}</button>`).join('')}</div><div id="cpB"></div>`;
+  $$('#cpT button').forEach(b=>b.onclick=()=>{compTab=b.dataset.t;renderRecepcion()});({factura:drawFactura,recibir:drawPendRecibo,hist:drawHistCompras})[compTab]()}
+function drawFactura(){
+  if(!fac){try{fac=JSON.parse(localStorage.getItem('minipos_fac'))}catch(e){}if(!fac)fac=facNew()}fac=Object.assign(facNew(),fac);
   const k=facCfg(),save=()=>localStorage.setItem('minipos_fac',JSON.stringify(fac));
-  $('#view').innerHTML=`<div class="page-head"><h2>Ingreso de facturas de compra</h2><div class="row" style="flex:0;flex-wrap:nowrap">
-    <label class="btn acc" style="cursor:pointer;margin:0;color:#2b1a00;font-size:14px">📄 Subir factura (XML, ZIP, PDF o foto)<input type="file" id="fcF" accept=".xml,.zip,.pdf,image/*" style="display:none"></label>
-    <label class="btn" style="cursor:pointer;margin:0;color:var(--ink);font-size:14px">📷 Tomar foto<input type="file" id="fcCam" accept="image/*" capture="environment" style="display:none"></label><button class="btn" id="fcClr">Limpiar</button></div></div>
+  $('#cpB').innerHTML=`<div class="row" style="justify-content:flex-end;margin-bottom:10px;flex-wrap:nowrap">
+    <label class="btn acc" style="cursor:pointer;margin:0;color:#2b1a00;font-size:14px;flex:0 0 auto">📄 Subir factura (XML, ZIP, PDF o foto)<input type="file" id="fcF" accept=".xml,.zip,.pdf,image/*" style="display:none"></label>
+    <label class="btn" style="cursor:pointer;margin:0;color:var(--ink);font-size:14px;flex:0 0 auto">📷 Tomar foto<input type="file" id="fcCam" accept="image/*" capture="environment" style="display:none"></label><button class="btn" id="fcClr">Limpiar</button></div>
    <div class="card section"><div class="grid3"><label>Proveedor / empresa<input id="fcE" list="dlE3" value="${esc(fac.empresa)}"></label><label>N° factura<input id="fcN" value="${esc(fac.numero)}"></label><label>Fecha factura<input type="date" id="fcD" value="${esc(fac.fecha)}"></label></div>
     <datalist id="dlE3">${empresas().map(e=>`<option>${esc(e)}</option>`).join('')}</datalist>
     <div class="grid3" style="margin-top:8px"><label>Ingresa a<select id="fcU"><option value="bodega" ${fac.ubic==='bodega'?'selected':''}>Bodega</option><option value="sala" ${fac.ubic==='sala'?'selected':''}>Sala de ventas</option></select></label>
-     <label>Rentabilidad por defecto (%)<input id="fcM" inputmode="decimal" value="${k.margen}"></label><label>Calcular la rentabilidad<select id="fcMet"><option value="venta" ${k.metodo==='venta'?'selected':''}>Sobre el precio de venta (margen)</option><option value="costo" ${k.metodo==='costo'?'selected':''}>Sobre el costo (incremento)</option></select></label></div>
+     <label>🚚 Flete / transporte ($)<input id="fcFl" inputmode="numeric" value="${esc(fac.flete)}" placeholder="0"></label><label>Repartir el flete<select id="fcFm">${Object.entries(FLETE_MET).map(([k2,v])=>`<option value="${k2}" ${fac.fleteMet===k2?'selected':''}>${v}</option>`).join('')}</select></label></div>
+    <div class="grid3" style="margin-top:8px"><label>Rentabilidad por defecto (%)<input id="fcM" inputmode="decimal" value="${k.margen}"></label><label>Calcular la rentabilidad<select id="fcMet"><option value="venta" ${k.metodo==='venta'?'selected':''}>Sobre el precio de venta (margen)</option><option value="costo" ${k.metodo==='costo'?'selected':''}>Sobre el costo (incremento)</option></select></label>
+     <label>Redondear precio a<select id="fcRd">${[10,50,100,500].map(v=>`<option ${k.red==v?'selected':''}>${v}</option>`).join('')}</select></label></div>
     <div class="row" style="margin-top:8px;align-items:center"><label class="chk" style="flex:0 0 auto"><input type="checkbox" id="fcR" ${k.resp?'checked':''}> Responsable de IVA (el IVA de compra no es costo; el precio de venta lleva IVA)</label>
-     <label style="max-width:140px">Redondear precio a<select id="fcRd">${[10,50,100,500].map(v=>`<option ${k.red==v?'selected':''}>${v}</option>`).join('')}</select></label>
      <label class="chk" style="flex:0 0 auto"><input type="checkbox" id="fcEs" ${k.escalar?'checked':''}> Subir también los precios de las presentaciones</label></div>
-    <small class="mut">El impoconsumo (licores, cigarrillos, bolsas, INC) siempre se suma al costo. ${fac.fuente!=='manual'?'Origen de los datos: <b>'+esc(fac.fuente)+'</b>.':''}</small></div>
+    <small class="mut">El impoconsumo (licores, cigarrillos, bolsas, INC) y el flete siempre se suman al costo. ${fac.fuente!=='manual'?'Origen de los datos: <b>'+esc(fac.fuente)+'</b>.':''}</small></div>
    <div id="fcMsg"></div>
    ${fac.raw?`<details class="card section"><summary class="b" style="cursor:pointer">Ver texto reconocido de la imagen</summary><pre style="white-space:pre-wrap;font-size:11px;max-height:260px;overflow:auto">${esc(fac.raw)}</pre></details>`:''}
-   <div class="card section"><b>Agregar ítem manualmente</b><div id="fcAdd"></div></div>
-   <div id="fcT"></div>
-   <div class="card" style="margin-top:14px"><h3>Facturas ingresadas</h3><div class="tbl-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>#</th><th>Ingreso</th><th>Proveedor</th><th>Factura</th><th>Origen</th><th>Destino</th><th class="r">Ítems</th><th class="r">Total</th><th>Usuario</th><th></th></tr></thead><tbody>
-   ${DB.all('recepciones').sort((a,b)=>b.numero-a.numero).slice(0,100).map(r=>`<tr><td>${r.numero}</td><td>${fdt(r.fecha)}</td><td>${esc(r.empresa)}</td><td>${esc(r.factura)}</td><td><small>${esc(r.fuente||'manual')}</small></td><td>${esc(r.ubic)}</td><td class="r">${r.items.length}</td><td class="r b">${money(r.total)}</td><td>${esc(r.usuario)}</td><td><button class="btn sm" data-rp="${r.id}">Imprimir</button></td></tr>`).join('')||'<tr><td colspan="10" class="mut">Sin facturas</td></tr>'}</tbody></table></div></div>`;
-  $$('[data-rp]').forEach(b=>b.onclick=()=>printRec(DB.get('recepciones',b.dataset.rp)));
-  const hdr=()=>{fac.empresa=$('#fcE').value.trim();fac.numero=$('#fcN').value.trim();fac.fecha=$('#fcD').value;fac.ubic=$('#fcU').value;save()};
-  ['fcE','fcN','fcD','fcU'].forEach(id=>$('#'+id).onchange=hdr);
+   <div class="card section"><b>Agregar ítem manualmente</b><div id="fcAdd"></div></div><div id="fcT"></div>`;
+  const hdr=()=>{fac.empresa=$('#fcE').value.trim();fac.numero=$('#fcN').value.trim();fac.fecha=$('#fcD').value;fac.ubic=$('#fcU').value;fac.flete=$('#fcFl').value;fac.fleteMet=$('#fcFm').value;save()};
+  ['fcE','fcN','fcD','fcU'].forEach(id=>$('#'+id).onchange=hdr);['fcFl','fcFm'].forEach(id=>$('#'+id).onchange=()=>{hdr();fac.lines.forEach(l=>l.precioNuevo=null);drawT()});
   const kc=()=>{saveCfg({responsableIVA:$('#fcR').checked,margenDefecto:dec($('#fcM').value),metodoMargen:$('#fcMet').value,redondeo:+$('#fcRd').value,escalarPres:$('#fcEs').checked});drawT()};
   ['fcR','fcM','fcMet','fcRd','fcEs'].forEach(id=>$('#'+id).onchange=kc);
   $('#fcClr').onclick=async()=>{if(fac.lines.length&&!(await confirmBox('¿Descartar la factura que está digitando?','Descartar')))return;fac=facNew();localStorage.removeItem('minipos_fac');renderRecepcion()};
-  prodPick($('#fcAdd'),p=>{fac.lines.push({id:uid(),desc:p.nombre,codFac:'',gtin:'',pid:p.id,match:'manual',factor:1,cant:1,costo:Math.round(p.costo),descP:0,iva:+p.iva||0,inc:+p.inc||0,margen:p.margen??null,precioNuevo:null,act:null});save();drawT();$('.pp-sel',$('#fcAdd')).innerHTML=''});
+  prodPick($('#fcAdd'),p=>{fac.lines.push({id:uid(),desc:p.nombre,codFac:'',gtin:'',pid:p.id,match:'manual',factor:1,cant:1,rec:null,costo:Math.round(p.costo),descP:0,iva:+p.iva||0,inc:+p.inc||0,margen:p.margen??null,precioNuevo:null,act:null});save();drawT();$('.pp-sel',$('#fcAdd')).innerHTML=''});
   const importar=async file=>{if(!file)return;const msg=$('#fcMsg');const nm=file.name.toLowerCase();const say=h=>msg.innerHTML=`<div class="hint section">${h}</div>`;
     try{let data;
       if(nm.endsWith('.zip')){say('Abriendo el ZIP de la factura electrónica…');await loadScript(JSZIPJS);const z=await JSZip.loadAsync(file);const x=Object.values(z.files).find(f=>/\.xml$/i.test(f.name));if(!x)throw new Error('El ZIP no trae el XML de la factura.');data=parseFacturaXML(await x.async('string'));data.fuente='Factura electrónica (XML)'}
@@ -1045,58 +1135,130 @@ function renderRecepcion(){
       else{say('🔎 Reconociendo la factura… la primera vez descarga el lector de texto (puede tardar 20–40 s).');data=await ocrFactura(file,p=>say('🔎 Reconociendo texto… '+p+'%'))}
       if(!data.lines.length)throw new Error('No se encontraron ítems en el documento. Pruebe con una foto más nítida, de frente y con buena luz, o agregue los ítems manualmente.');
       if(data.proveedor)fac.empresa=matchEmpresa(data.proveedor)||data.proveedor;if(data.numero)fac.numero=data.numero;if(data.fecha)fac.fecha=String(data.fecha).slice(0,10);if(data.total)fac.totalDoc=data.total;fac.fuente=data.fuente;fac.raw=data.raw||'';
-      data.lines.forEach(x=>{const l={id:uid(),desc:x.desc,codFac:x.codFac||'',gtin:x.gtin||'',factor:1,cant:x.cant||1,costo:+(+x.costo||0).toFixed(2),descP:x.descP||0,iva:x.iva??0,inc:x.inc||0,margen:null,precioNuevo:null,act:null};
-        matchLinea(l,fac.empresa);const p=l.pid&&DB.get('productos',l.pid);if(p){if(p.margen!=null)l.margen=p.margen;if(x.iva==null)l.iva=+p.iva||0;if(!x.inc&&p.inc)l.inc=+(p.inc*(l.factor||1)).toFixed(2)}if(x.iva==null&&!p)l.iva=0;fac.lines.push(l)});
+      data.lines.forEach(x=>{const l={id:uid(),desc:x.desc,codFac:x.codFac||'',gtin:x.gtin||'',factor:1,cant:x.cant||1,rec:null,costo:+(+x.costo||0).toFixed(2),descP:x.descP||0,iva:x.iva??0,inc:x.inc||0,margen:null,precioNuevo:null,act:null};
+        matchLinea(l,fac.empresa);const p=l.pid&&DB.get('productos',l.pid);if(p){if(p.margen!=null)l.margen=p.margen;if(x.iva==null)l.iva=+p.iva||0;if(!x.inc&&p.inc)l.inc=+(p.inc*(l.factor||1)).toFixed(2)}fac.lines.push(l)});
       save();renderRecepcion();const ok=fac.lines.filter(l=>l.pid).length;
       $('#fcMsg').innerHTML=`<div class="hint section ok">✔ ${data.lines.length} ítems leídos de ${esc(data.fuente)} · <b>${ok}</b> asociados a productos del sistema${ok<fac.lines.length?' · <span class="err">'+(fac.lines.length-ok)+' por asociar</span>':''}. ${/OCR|PDF/.test(data.fuente)?'Revise cantidades, costos e impuestos antes de guardar.':''}</div>`}
     catch(e){msg.innerHTML=`<div class="hint section err b">${esc(e.message)}</div>`}};
   $('#fcF').onchange=e=>{importar(e.target.files[0]);e.target.value=''};$('#fcCam').onchange=e=>{importar(e.target.files[0]);e.target.value=''};
   const drawT=()=>{const box=$('#fcT');if(!fac.lines.length){box.innerHTML='<div class="empty card">Suba la factura o agregue los ítems uno por uno.</div>';return}
-    const C=fac.lines.map(calcLinea);const T={sub:0,iva:0,inc:0,total:0};C.forEach(c=>{T.sub+=c.sub;T.iva+=c.ivaT;T.inc+=c.incT;T.total+=c.total});
-    const td=dec(fac.totalDoc),dif=td?td-T.total:0;
-    box.innerHTML=`<div class="tbl-wrap" style="max-height:none"><table class="t" style="font-size:13px"><thead><tr><th>#</th><th style="min-width:170px">Ítem de la factura</th><th style="min-width:190px">Producto en el sistema</th><th>Und por empaque</th><th style="width:70px">Cant.</th><th style="width:100px">Costo unit. (antes de imp.)</th><th style="width:60px">Desc %</th><th style="width:72px">IVA %</th><th style="width:85px">Impoconsumo $ / unid.</th><th class="r">Costo real und</th><th style="width:65px">Rentab. %</th><th class="r">Precio actual</th><th style="width:105px">Precio nuevo</th><th>Act.</th><th></th></tr></thead><tbody>
-    ${fac.lines.map((l,i)=>{const c=C[i],p=c.p;const pl=p?presList(p):[];const bg=!p?'#fdeceb':(l.match.includes('verificar')?'#fff7e0':'');
+    const rf=repartirFlete(fac);const C=fac.lines.map(calcLinea);const T={sub:0,iva:0,inc:0,total:0,fl:0};C.forEach(c=>{T.sub+=c.sub;T.iva+=c.ivaT;T.inc+=c.incT;T.total+=c.total;T.fl+=c.fleteT});
+    const td=dec(fac.totalDoc),dif=td?td-T.total:0,peso=fac.fleteMet==='peso'&&dec(fac.flete);
+    const nov=C.map((c,i)=>({c,l:fac.lines[i]})).filter(x=>x.c.dif!==0);
+    box.innerHTML=`<div class="tbl-wrap" style="max-height:none"><table class="t" style="font-size:13px"><thead><tr><th>#</th><th style="min-width:160px">Ítem de la factura</th><th style="min-width:180px">Producto en el sistema</th><th>Und por empaque</th><th style="width:66px">Cant. factura</th><th style="width:70px">Cant. recibida</th><th style="width:95px">Costo unit. (antes de imp.)</th><th style="width:58px">Desc %</th><th style="width:72px">IVA %</th><th style="width:80px">Impoconsumo $ / unid.</th>${peso?'<th style="width:70px">Peso und (kg)</th>':''}<th class="r">Costo real und</th><th style="width:62px">Rentab. %</th><th class="r">Precio actual</th><th style="width:100px">Precio nuevo</th><th>Act.</th><th></th></tr></thead><tbody>
+    ${fac.lines.map((l,i)=>{const c=C[i],p=c.p;const pl=p?presList(p):[];const bg=!p?'#fdeceb':(c.dif!==0?'#fff1e6':(l.match.includes('verificar')?'#fff7e0':''));
       return`<tr data-i="${i}" style="background:${bg}"><td>${i+1}</td><td>${esc(l.desc)}${l.codFac?'<br><small class="mut">Cód. '+esc(l.codFac)+'</small>':''}</td>
       <td>${p?`<b>${esc(p.nombre)}</b><br><span class="pill ${l.match.includes('verificar')?'warn':'ok'}">${esc(l.match)}</span>`:'<span class="err b">Sin asociar</span><br>'} <button class="btn sm" data-ch>🔎</button>${p?'':' <button class="btn sm pri" data-cr>+ Crear</button>'}</td>
-      <td>${p?`<select data-f="factor">${[...new Set([1,...pl.map(x=>x.factor),+l.factor||1])].map(fv=>`<option value="${fv}" ${+l.factor===fv?'selected':''}>${fv===1?'1 (unidad)':fv+(pl.find(x=>x.factor===fv)?' · '+esc(pl.find(x=>x.factor===fv).nombre):'')}</option>`).join('')}</select><input data-f="factor" inputmode="numeric" value="${l.factor}" style="margin-top:3px;width:70px" title="Otro valor">`:`<input data-f="factor" inputmode="numeric" value="${l.factor}">`}</td>
-      <td><input data-f="cant" inputmode="decimal" value="${l.cant}"></td><td><input data-f="costo" inputmode="decimal" value="${l.costo}"></td><td><input data-f="descP" inputmode="decimal" value="${l.descP||0}"></td>
+      <td>${p?`<select data-f="factor">${[...new Set([1,...pl.map(x=>x.factor),+l.factor||1])].map(fv=>`<option value="${fv}" ${+l.factor===fv?'selected':''}>${fv===1?'1 (unidad)':fv+(pl.find(x=>x.factor===fv)?' · '+esc(pl.find(x=>x.factor===fv).nombre):'')}</option>`).join('')}</select><input data-f="factor" inputmode="numeric" value="${l.factor}" style="margin-top:3px;width:62px" title="Otro valor">`:`<input data-f="factor" inputmode="numeric" value="${l.factor}">`}</td>
+      <td><input data-f="cant" inputmode="decimal" value="${l.cant}"></td><td><input data-f="rec" inputmode="decimal" value="${l.rec??''}" placeholder="${l.cant}">${c.dif?`<small class="${c.dif<0?'err':'warn'} b">${c.dif>0?'+':''}${num(c.dif,2)}</small>`:''}</td>
+      <td><input data-f="costo" inputmode="decimal" value="${l.costo}"></td><td><input data-f="descP" inputmode="decimal" value="${l.descP||0}"></td>
       <td><select data-f="iva">${[0,5,19].map(v=>`<option ${+l.iva===v?'selected':''}>${v}</option>`).join('')}</select></td><td><input data-f="inc" inputmode="decimal" value="${l.inc||0}"></td>
-      <td class="r b">${money(c.costoBase)}<br><small class="mut">${c.f>1?'empaque '+money(c.costoU):''}</small></td><td><input data-f="margen" inputmode="decimal" value="${l.margen??k.margen}"></td>
+      ${peso?`<td><input data-f="peso" inputmode="decimal" value="${l.peso??(p&&p.peso)??''}" placeholder="kg"></td>`:''}
+      <td class="r b">${money(c.costoBase)}<br><small class="mut">${c.fu?'flete '+money(c.fu)+'/und':''}${c.f>1?'<br>empaque '+money(c.costoU):''}</small></td><td><input data-f="margen" inputmode="decimal" value="${l.margen??k.margen}"></td>
       <td class="r">${p?money(c.actual)+'<br><small class="'+(c.mgA<.05?'err b':'mut')+'">mg '+pct(c.mgA)+'</small>':'—'}</td>
       <td><input data-f="precioNuevo" inputmode="numeric" value="${l.precioNuevo??c.sug}"><small class="${c.mgN<.05?'err':'mut'}">mg ${pct(c.mgN)}${c.pv!==c.actual&&c.actual?' · '+(c.pv>c.actual?'▲':'▼')+pct(Math.abs(c.pv-c.actual)/c.actual):''}</small></td>
       <td><input type="checkbox" data-f="act" ${actOf(l,c)?'checked':''} style="width:auto" title="Actualizar el precio de venta"></td><td><button class="btn sm dan" data-del>✕</button></td></tr>`}).join('')}</tbody></table></div>
-    <div class="grid2" style="margin-top:12px"><div class="card"><table class="t"><tbody><tr><td>Subtotal (antes de impuestos, con descuentos)</td><td class="r">${money(T.sub)}</td></tr><tr><td>IVA</td><td class="r">${money(T.iva)}</td></tr><tr><td>Impoconsumo</td><td class="r">${money(T.inc)}</td></tr><tr><td class="b">Total calculado</td><td class="r b">${money(T.total)}</td></tr>
-      <tr><td>Total según la factura</td><td><input id="fcTD" inputmode="numeric" value="${esc(fac.totalDoc)}" placeholder="Opcional, para cuadrar"></td></tr>${td?`<tr><td class="b">Diferencia</td><td class="r b ${Math.abs(dif)>Math.max(100,td*.005)?'err':'ok'}">${money(dif)}</td></tr>`:''}</tbody></table></div>
-     <div class="card cfg-sec"><div><b>${fac.lines.length}</b> ítems · <b>${num(C.reduce((a,c)=>a+c.und,0))}</b> unidades · <b>${fac.lines.filter((l,i)=>actOf(l,C[i])&&C[i].p&&Math.round(C[i].pv)!==C[i].actual).length}</b> precios por actualizar${fac.lines.some(l=>!l.pid)?' · <span class="err b">'+fac.lines.filter(l=>!l.pid).length+' sin asociar</span>':''}</div>
-      <small class="mut">Por defecto solo se marcan para actualizar los precios que <b>suben</b>; marque «Act.» si también quiere bajar alguno. Costo real = (costo − descuento) + impoconsumo ${k.resp?'':'+ IVA'} ÷ unidades por empaque. Precio = costo real ${k.metodo==='venta'?'÷ (1 − rentabilidad)':'× (1 + rentabilidad)'}${k.resp?' + IVA':''}, redondeado a $${k.red}. El costo del inventario se promedia con el existente.</small>
-      <button class="btn pri big" id="fcSave">✔ Guardar factura: ingresar inventario y actualizar precios</button></div></div>`;
+    ${rf.aviso?`<div class="hint warn section">${rf.aviso}</div>`:''}
+    ${nov.length?`<div class="card section" style="border:2px solid var(--err);margin-top:12px"><b class="err">⚠ Cruce factura vs recibido: ${nov.length} novedades</b> · a reclamar al proveedor: <b>${money(-nov.filter(x=>x.c.dif<0).reduce((a,x)=>a+x.c.valDif,0))}</b>
+      <table class="t" style="margin-top:6px"><tbody>${nov.map(x=>`<tr><td class="b">${esc(x.c.p?x.c.p.nombre:x.l.desc)}</td><td>Facturado ${num(x.c.q,2)} · recibido ${num(x.c.qR,2)}</td><td class="${x.c.dif<0?'err':'warn'} b">${x.c.dif<0?'Faltan '+num(-x.c.dif,2):'Sobran '+num(x.c.dif,2)}</td><td class="r">${money(Math.abs(x.c.valDif))}</td></tr>`).join('')}</tbody></table><small class="mut">Al inventario entra solo lo recibido.</small></div>`:''}
+    <div class="grid2" style="margin-top:12px"><div class="card"><table class="t"><tbody><tr><td>Subtotal (antes de impuestos, con descuentos)</td><td class="r">${money(T.sub)}</td></tr><tr><td>IVA</td><td class="r">${money(T.iva)}</td></tr><tr><td>Impoconsumo</td><td class="r">${money(T.inc)}</td></tr><tr><td class="b">Total factura calculado</td><td class="r b">${money(T.total)}</td></tr>
+      <tr><td>Total según la factura</td><td><input id="fcTD" inputmode="numeric" value="${esc(fac.totalDoc)}" placeholder="Opcional, para cuadrar"></td></tr>${td?`<tr><td class="b">Diferencia</td><td class="r b ${Math.abs(dif)>Math.max(100,td*.005)?'err':'ok'}">${money(dif)}</td></tr>`:''}
+      ${dec(fac.flete)?`<tr><td>🚚 Flete repartido (${esc(FLETE_MET[fac.fleteMet])})</td><td class="r">${money(T.fl)}</td></tr><tr><td class="b">Costo total de la compra</td><td class="r b">${money(T.total+T.fl)}</td></tr>`:''}</tbody></table></div>
+     <div class="card cfg-sec"><div><b>${fac.lines.length}</b> ítems · <b>${num(C.reduce((a,c)=>a+c.und,0))}</b> unidades recibidas · <b>${fac.lines.filter((l,i)=>actOf(l,C[i])&&C[i].p&&Math.round(C[i].pv)!==C[i].actual).length}</b> precios por actualizar${fac.lines.some(l=>!l.pid)?' · <span class="err b">'+fac.lines.filter(l=>!l.pid).length+' sin asociar</span>':''}</div>
+      <small class="mut">Por defecto solo se marcan para actualizar los precios que <b>suben</b>. Costo real = (costo − descuento) + impoconsumo ${k.resp?'':'+ IVA'} + flete, ÷ unidades por empaque. Precio = costo real ${k.metodo==='venta'?'÷ (1 − rentabilidad)':'× (1 + rentabilidad)'}${k.resp?' + IVA':''}, redondeado a $${k.red}.</small>
+      <button class="btn big" id="fcPend">💾 Guardar pendiente por recibir (bodega hace el cruce)</button><button class="btn pri big" id="fcSave">✔ Guardar e ingresar al inventario</button></div></div>`;
     $('#fcTD').onchange=()=>{fac.totalDoc=$('#fcTD').value;save();drawT()};
     $$('#fcT tr[data-i]').forEach(tr=>{const i=+tr.dataset.i,l=fac.lines[i];
-      $$('[data-f]',tr).forEach(inp=>inp.onchange=()=>{const f=inp.dataset.f;if(f==='act')l.act=inp.checked;else if(f==='precioNuevo')l.precioNuevo=inp.value.trim()===''?null:nval(inp.value);else if(f==='costo')l.costo=nval(inp.value);else l[f]=dec(inp.value);
-        if(['costo','descP','iva','inc','margen','factor'].includes(f))l.precioNuevo=null;save();drawT()});
+      $$('[data-f]',tr).forEach(inp=>inp.onchange=()=>{const f=inp.dataset.f;if(f==='act')l.act=inp.checked;else if(f==='precioNuevo')l.precioNuevo=inp.value.trim()===''?null:nval(inp.value);else if(f==='costo')l.costo=nval(inp.value);else if(f==='rec')l.rec=inp.value.trim()===''?null:dec(inp.value);else if(f==='peso')l.peso=inp.value.trim()===''?null:dec(inp.value);else l[f]=dec(inp.value);
+        if(['costo','descP','iva','inc','margen','factor','rec','peso','cant'].includes(f))l.precioNuevo=null;save();drawT()});
       $('[data-del]',tr).onclick=()=>{fac.lines.splice(i,1);save();drawT()};
       $('[data-ch]',tr).onclick=()=>searchPickModal(norm(l.desc).split(' ').filter(w=>w.length>2).slice(0,3).join(' '),p=>{l.pid=p.id;l.match='manual';if(p.margen!=null)l.margen=p.margen;l.precioNuevo=null;save();drawT()});
       const cr=$('[data-cr]',tr);cr&&(cr.onclick=()=>{const c=calcLinea(l);productForm({codigo:l.gtin||'',nombre:l.desc.replace(/\b\w/g,x=>x.toUpperCase()).replace(/\B\w/g,x=>x.toLowerCase()),empresa:fac.empresa,costo:Math.round(c.costoBase),precio:c.sug,iva:+l.iva||0},p=>{l.pid=p.id;l.match='creado';save();drawT()},'Crear producto desde la factura (deje el stock inicial en 0: lo suma la factura)')})});
-    $('#fcSave').onclick=guardarFactura};
+    safeBtn($('#fcSave'),()=>guardarFactura('ingresar'));safeBtn($('#fcPend'),()=>guardarFactura('pendiente'))};
   drawT()}
-async function guardarFactura(){hdrSync();const k=facCfg();
+// Ejecuta la acción después de aplicar el último dato digitado (evita perder el clic cuando la tabla se recalcula)
+function safeBtn(b,fn){if(!b)return;let t=0;b.onpointerdown=e=>{e.preventDefault();t=Date.now();const a=document.activeElement;if(a&&a!==b&&a.blur)a.blur();setTimeout(fn,0)};b.onclick=e=>{if(Date.now()-t>800)fn()}}
+function hdrSync(){const g=id=>{const e=$('#'+id);return e?e.value:null};if(g('fcE')!=null){fac.empresa=g('fcE').trim();fac.numero=g('fcN').trim();fac.fecha=g('fcD');fac.ubic=g('fcU');fac.flete=g('fcFl');fac.fleteMet=g('fcFm')}}
+async function guardarFactura(modo){hdrSync();
   if(!fac.empresa)return toast('Escriba el proveedor','err');if(!fac.lines.length)return toast('La factura no tiene ítems','err');
   if(fac.lines.some(l=>!l.pid))return toast('Hay ítems sin asociar: use 🔎 para asociarlos, + Crear, o elimínelos','err',5000);
-  if(fac.lines.some(l=>!(+l.cant>0)))return toast('Todas las cantidades deben ser mayores a 0','err');
-  if(fac.numero&&DB.all('recepciones').some(r=>r.empresa===fac.empresa&&r.factura===fac.numero)&&!(await confirmBox(`La factura <b>${esc(fac.numero)}</b> de ${esc(fac.empresa)} ya fue ingresada. ¿Ingresarla de nuevo?`,'Ingresar igual')))return;
-  const C=fac.lines.map(calcLinea);const nP=fac.lines.filter((l,i)=>actOf(l,C[i])&&Math.round(C[i].pv)!==C[i].actual).length;const total=C.reduce((a,c)=>a+c.total,0);
-  if(!(await confirmBox(`Ingresar <b>${num(C.reduce((a,c)=>a+c.und,0))} unidades</b> a ${fac.ubic} por <b>${money(total)}</b> y actualizar <b>${nP}</b> precios de venta.`,'Guardar factura')))return;
-  const rec={numero:nextNum('recConsecutivo'),fecha:new Date().toISOString(),fechaFactura:fac.fecha,empresa:fac.empresa,factura:fac.numero,ubic:fac.ubic,usuario:USER.nombre,fuente:fac.fuente,items:[],total:Math.round(total),
-    totales:{sub:Math.round(C.reduce((a,c)=>a+c.sub,0)),iva:Math.round(C.reduce((a,c)=>a+c.ivaT,0)),inc:Math.round(C.reduce((a,c)=>a+c.incT,0))}};
-  fac.lines.forEach((l,i)=>{const c=C[i];const p=DB.get('productos',l.pid);const st=Math.max(0,stockTotal(p));
-    p.costo=Math.round(st+c.und>0?(st*(+p.costo||0)+c.und*c.costoBase)/(st+c.und):c.costoBase);p.iva=+l.iva||0;p.inc=+(c.incU/c.f).toFixed(2);p.margen=l.margen!=null&&l.margen!==''?+l.margen:k.margen;if(!p.empresa)p.empresa=fac.empresa;
-    if(l.codFac){p.codProv=Object.assign({},p.codProv,{[fac.empresa]:l.codFac});p.factorProv=Object.assign({},p.factorProv,{[fac.empresa]:c.f})}
-    if(actOf(l,c)&&c.pv>0&&Math.round(c.pv)!==+p.precio){const old=+p.precio||0,r=old?c.pv/old:1;p.precio=Math.round(c.pv);
-      if(k.escalar&&old)(p.presentaciones||[]).forEach(x=>x.precio=Math.ceil(x.precio*r/k.red)*k.red);kardex(p.id,0,'precio','sala','Precio '+money(old)+' → '+money(p.precio),'Factura '+(fac.numero||'')+' · '+fac.empresa)}
-    moveStock(p,c.und,fac.ubic,'recepcion','Factura '+(fac.numero||'s/n')+' · '+fac.empresa);
-    rec.items.push({pid:p.id,nombre:p.nombre,descFactura:l.desc,pres:c.f>1?'empaque x'+c.f:(p.unidad||'Unidad'),cant:c.q,und:c.und,costo:Math.round(c.costoU),costoBase:Math.round(c.costoBase),iva:+l.iva||0,inc:c.incU,subtotal:Math.round(c.total),precio:p.precio})});
-  DB.put('recepciones',rec);fac=facNew();localStorage.removeItem('minipos_fac');toast('Factura ingresada (recibo #'+rec.numero+') · '+nP+' precios actualizados',undefined,5000);renderRecepcion()}
-function hdrSync(){const g=id=>{const e=$('#'+id);return e?e.value:null};if(g('fcE')!=null){fac.empresa=g('fcE').trim();fac.numero=g('fcN').trim();fac.fecha=g('fcD');fac.ubic=g('fcU')}}
+  if(fac.lines.some(l=>!(+l.cant>0)&&!(recQ(l)>0)))return toast('Revise las cantidades','err');
+  if(fac.numero&&DB.all('recepciones').some(r=>r.empresa===fac.empresa&&r.factura===fac.numero)&&!(await confirmBox(`La factura <b>${esc(fac.numero)}</b> de ${esc(fac.empresa)} ya fue registrada. ¿Registrarla de nuevo?`,'Registrar igual')))return;
+  repartirFlete(fac);const C=fac.lines.map(calcLinea);const total=C.reduce((a,c)=>a+c.total,0);
+  if(modo==='pendiente'){fac.lines.forEach(l=>l.rec=null);
+    const r=DB.put('recepciones',{numero:nextNum('recConsecutivo'),fecha:new Date().toISOString(),fechaFactura:fac.fecha,empresa:fac.empresa,factura:fac.numero,ubic:fac.ubic,usuario:USER.nombre,fuente:fac.fuente,estado:'pendiente',facData:JSON.parse(JSON.stringify(fac)),items:[],total:Math.round(total)});
+    fac=facNew();localStorage.removeItem('minipos_fac');toast('Factura '+(r.factura||'#'+r.numero)+' guardada: pendiente de recibir en bodega',undefined,5000);compTab='recibir';renderRecepcion();return}
+  const nov=C.filter(c=>c.dif!==0);const nP=fac.lines.filter((l,i)=>actOf(l,C[i])&&Math.round(C[i].pv)!==C[i].actual).length;
+  if(!(await confirmBox(`Ingresar <b>${num(C.reduce((a,c)=>a+c.und,0))} unidades</b> a ${fac.ubic} (factura ${money(total)}${dec(fac.flete)?' + flete '+money(dec(fac.flete)):''}) y actualizar <b>${nP}</b> precios.${nov.length?`<br><b class="err">⚠ ${nov.length} novedades entre lo facturado y lo recibido.</b>`:''}`,'Guardar e ingresar')))return;
+  const r=aplicarFactura(fac,null);fac=facNew();localStorage.removeItem('minipos_fac');renderRecepcion();if(r.novedades.length)verNovedades(r)}
+// Aplica una factura al inventario (cantidades recibidas), costos promedio, precios y novedades
+function aplicarFactura(F,recExist){const k=facCfg();repartirFlete(F);const C=F.lines.map(calcLinea);const total=C.reduce((a,c)=>a+c.total,0);
+  const rec=recExist||{numero:nextNum('recConsecutivo'),fecha:new Date().toISOString()};
+  Object.assign(rec,{fechaFactura:F.fecha,empresa:F.empresa,factura:F.numero,ubic:F.ubic,usuario:recExist?rec.usuario:USER.nombre,recibio:USER.nombre,fechaRecibo:new Date().toISOString(),fuente:F.fuente,estado:'recibida',items:[],novedades:[],total:Math.round(total),flete:dec(F.flete),fleteMet:F.fleteMet,
+    totales:{sub:Math.round(C.reduce((a,c)=>a+c.sub,0)),iva:Math.round(C.reduce((a,c)=>a+c.ivaT,0)),inc:Math.round(C.reduce((a,c)=>a+c.incT,0))}});
+  let nP=0;
+  F.lines.forEach((l,i)=>{const c=C[i];const p=DB.get('productos',l.pid);if(!p)return;const st=Math.max(0,stockTotal(p));
+    const vdNF=c.q===0?c.dif*(+p.costo||0):c.valDif;
+    if(c.und>0&&c.q>0)p.costo=Math.round(st+c.und>0?(st*(+p.costo||0)+c.und*c.costoBase)/(st+c.und):c.costoBase);
+    p.iva=+l.iva||0;p.inc=+(c.incU/c.f).toFixed(2);p.margen=l.margen!=null&&l.margen!==''?+l.margen:k.margen;if(!p.empresa)p.empresa=F.empresa;if(l.peso!=null&&l.peso!=='')p.peso=+l.peso;
+    if(l.codFac){p.codProv=Object.assign({},p.codProv,{[F.empresa]:l.codFac});p.factorProv=Object.assign({},p.factorProv,{[F.empresa]:c.f})}
+    if(c.q>0&&actOf(l,c)&&c.pv>0&&Math.round(c.pv)!==+p.precio){const old=+p.precio||0,r=old?c.pv/old:1;p.precio=Math.round(c.pv);nP++;
+      if(k.escalar&&old)(p.presentaciones||[]).forEach(x=>x.precio=Math.ceil(x.precio*r/k.red)*k.red);kardex(p.id,0,'precio','sala','Precio '+money(old)+' → '+money(p.precio),'Factura '+(F.numero||'')+' · '+F.empresa)}
+    if(c.und)moveStock(p,c.und,F.ubic,'recepcion','Factura '+(F.numero||'s/n')+' · '+F.empresa);else DB.put('productos',p);
+    rec.items.push({pid:p.id,nombre:p.nombre,descFactura:l.desc,pres:c.f>1?'empaque x'+c.f:(p.unidad||'Unidad'),cant:c.qR,cantFactura:c.q,und:c.und,costo:Math.round(c.costoU),costoBase:Math.round(c.costoBase),flete:Math.round(c.fleteT),iva:+l.iva||0,inc:c.incU,subtotal:Math.round(c.total),precio:p.precio});
+    if(c.dif!==0)rec.novedades.push({pid:p.id,nombre:p.nombre,facturado:c.q,recibido:c.qR,dif:c.dif,valor:Math.round(vdNF),tipo:c.q===0?'No facturado':(c.dif<0?'Faltante':'Sobrante')})});
+  rec.precios=nP;delete rec.facData;DB.put('recepciones',rec);
+  toast(`Factura ${rec.factura||'#'+rec.numero} ingresada · ${nP} precios actualizados${rec.novedades.length?' · ⚠ '+rec.novedades.length+' novedades':''}`,rec.novedades.length?'warn':'ok',6000);return rec}
+function verNovedades(r){const fl=r.novedades.filter(n=>n.dif<0);
+  const m=Modal.open({wide:true,title:'⚠ Novedades del recibo · '+esc(r.empresa)+' · factura '+esc(r.factura||'#'+r.numero),body:`<div class="tbl-wrap"><table class="t"><thead><tr><th>Producto</th><th>Novedad</th><th class="r">Facturado</th><th class="r">Recibido</th><th class="r">Diferencia</th><th class="r">Valor</th></tr></thead><tbody>
+    ${r.novedades.map(n=>`<tr><td class="b">${esc(n.nombre)}</td><td><span class="pill ${n.dif<0?'err':'warn'}">${n.tipo}</span></td><td class="r">${num(n.facturado,2)}</td><td class="r">${num(n.recibido,2)}</td><td class="r b ${n.dif<0?'err':''}">${n.dif>0?'+':''}${num(n.dif,2)}</td><td class="r">${money(Math.abs(n.valor))}</td></tr>`).join('')}</tbody></table></div>
+    <div class="hint"><b>Valor a reclamar al proveedor (faltantes): ${money(-fl.reduce((a,n)=>a+n.valor,0))}</b>. Solicite nota crédito o el despacho de lo faltante.</div>`,footer:`<button class="btn" data-c>Cerrar</button><button class="btn pri" data-p>🖨️ Imprimir acta de novedades</button>`});
+  $('[data-c]',m.el).onclick=()=>Modal.close(m);
+  $('[data-p]',m.el).onclick=()=>{const c=cfg();printSheet(`<h2 style="margin:0">${esc(c.negocio)}</h2><div>NIT ${esc(c.nit)} · ${esc(c.direccion)}</div><h2>ACTA DE NOVEDADES DE RECIBO</h2>
+    <p><b>Proveedor:</b> ${esc(r.empresa)} &nbsp; <b>Factura:</b> ${esc(r.factura||'—')} &nbsp; <b>Fecha factura:</b> ${esc(r.fechaFactura||'')} &nbsp; <b>Recibido:</b> ${fdt(r.fechaRecibo||r.fecha)} por ${esc(r.recibio||r.usuario)}</p>
+    <table class="sh"><thead><tr><th>Producto</th><th>Novedad</th><th class="r">Facturado</th><th class="r">Recibido</th><th class="r">Diferencia</th><th class="r">Valor</th></tr></thead><tbody>${r.novedades.map(n=>`<tr><td>${esc(n.nombre)}</td><td>${n.tipo}</td><td class="r">${num(n.facturado,2)}</td><td class="r">${num(n.recibido,2)}</td><td class="r">${num(n.dif,2)}</td><td class="r">${money(Math.abs(n.valor))}</td></tr>`).join('')}</tbody>
+    <tfoot><tr><td colspan="5" class="r b">VALOR A RECLAMAR (faltantes)</td><td class="r b">${money(-fl.reduce((a,n)=>a+n.valor,0))}</td></tr></tfoot></table><br><br><div style="display:flex;justify-content:space-between"><div>_______________________<br>Recibió</div><div>_______________________<br>Transportador / proveedor</div></div>`)}}
+function drawPendRecibo(){const L=recPend();
+  $('#cpB').innerHTML=`<div class="card section"><div class="row" style="align-items:end"><label>Buscar factura por número o proveedor<input id="rpQ" placeholder="Ej.: BV-884512" autocomplete="off" style="font-size:18px"></label><button class="btn pri" id="rpGo" style="flex:0">Abrir</button></div>
+    <small class="mut">Las facturas se cargan en «Ingresar factura» → «Guardar pendiente por recibir». Aquí bodega escanea lo que llegó y el sistema cruza con lo facturado.</small></div>
+   <div class="tbl-wrap"><table class="t"><thead><tr><th>#</th><th>Factura</th><th>Proveedor</th><th>Fecha factura</th><th class="r">Ítems</th><th class="r">Valor</th><th>Cargó</th><th></th></tr></thead><tbody>
+   ${L.map(r=>`<tr><td>${r.numero}</td><td class="b">${esc(r.factura||'—')}</td><td>${esc(r.empresa)}</td><td>${esc(r.fechaFactura||'')}</td><td class="r">${(r.facData.lines||[]).length}</td><td class="r">${money(r.total)}</td><td>${esc(r.usuario)}</td><td><button class="btn sm pri" data-o="${r.id}">📦 Recibir</button> <button class="btn sm dan" data-x="${r.id}">✕</button></td></tr>`).join('')||'<tr><td colspan="8" class="empty">No hay facturas pendientes por recibir</td></tr>'}</tbody></table></div>`;
+  const open=id=>{reciboAbierto=id;renderRecepcion()};
+  $$('[data-o]').forEach(b=>b.onclick=()=>open(b.dataset.o));
+  $$('[data-x]').forEach(b=>b.onclick=async()=>{if(await confirmBox('¿Eliminar esta factura pendiente? No afecta el inventario.','Eliminar')){DB.del('recepciones',b.dataset.x);drawPendRecibo()}});
+  const go=()=>{const q=norm($('#rpQ').value);if(!q)return;const r=L.find(x=>norm(x.factura)===q)||L.find(x=>norm(x.factura).includes(q)||norm(x.empresa).includes(q));r?open(r.id):toast('No hay una factura pendiente con ese número','err')};
+  $('#rpGo').onclick=go;$('#rpQ').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();go()}};setTimeout(()=>$('#rpQ')&&$('#rpQ').focus(),30)}
+function renderRecibo(r){const F=r.facData;F.lines.forEach(l=>{if(l.rU==null)l.rU=0});const save=()=>DB.put('recepciones',r);
+  const draw=()=>{const rows=F.lines.map((l,i)=>{const p=DB.get('productos',l.pid);const fU=(+l.cant||0)*(+l.factor||1);return{l,i,p,fU,rU:+l.rU||0,dif:(+l.rU||0)-fU}});
+    const ok=rows.filter(x=>x.dif===0&&x.fU>0).length,falt=rows.filter(x=>x.dif<0),sob=rows.filter(x=>x.dif>0);
+    $('#view').innerHTML=`<div class="page-head"><div><h2 style="margin:0">📦 Recibir factura ${esc(r.factura||'#'+r.numero)} · ${esc(r.empresa)}</h2><span class="mut">Fecha factura ${esc(r.fechaFactura||'')} · cargada por ${esc(r.usuario)} · ingresa a ${esc(F.ubic)}</span></div>
+      <div class="row" style="flex:0;flex-wrap:nowrap"><button class="btn" id="rbBack">← Volver</button><button class="btn" id="rbAll">Todo llegó completo</button><button class="btn pri" id="rbOk">✔ Confirmar recibo</button></div></div>
+     <div class="kpis"><div class="kpi"><small>Ítems completos</small><div class="ok">${ok} / ${rows.length}</div></div><div class="kpi"><small>Con faltante</small><div class="err">${falt.length}</div></div><div class="kpi"><small>Con sobrante / no facturados</small><div class="warn">${sob.length}</div></div><div class="kpi"><small>Unidades recibidas</small><div>${num(rows.reduce((a,x)=>a+x.rU,0))} / ${num(rows.reduce((a,x)=>a+x.fU,0))}</div></div></div>
+     <div class="card section" style="border:2px solid var(--acc)"><div class="row" style="align-items:end"><label style="flex:2">Escanee cada producto que llegó (suma 1 unidad; el código del empaque suma el empaque completo)<input id="rbS" autocomplete="off" placeholder="Código + Enter" style="font-size:18px"></label><button class="btn acc" id="rbCam" style="flex:0;padding:10px 16px">📷 Cámara continua</button></div></div>
+     <div class="tbl-wrap" style="max-height:none"><table class="t"><thead><tr><th>Producto</th><th>Empaque</th><th class="r">Facturado (und)</th><th style="width:120px">Recibido (und)</th><th class="r">Diferencia</th><th>Estado</th></tr></thead><tbody>
+     ${rows.map(x=>`<tr data-i="${x.i}" style="background:${x.dif<0&&x.rU>0?'#fdeceb':(x.dif>0?'#fff1e6':(x.dif===0&&x.fU>0?'#e9f7ef':''))}"><td class="b">${esc(x.p?x.p.nombre:x.l.desc)}<br><small class="mut">${esc(x.l.desc)}</small></td><td>${+x.l.factor>1?'x'+x.l.factor+' · '+num(x.l.cant)+' empaques':'Unidad'}</td><td class="r b">${num(x.fU,2)}</td>
+       <td><input data-r inputmode="decimal" value="${x.rU||''}" placeholder="0"></td><td class="r b ${x.dif<0?'err':(x.dif>0?'warn':'ok')}">${x.dif>0?'+':''}${num(x.dif,2)}</td>
+       <td>${x.fU===0?'<span class="pill warn">No facturado</span>':(x.dif===0?'<span class="pill ok">✔ Completo</span>':(x.rU===0?'<span class="pill">Pendiente</span>':(x.dif<0?'<span class="pill err">Faltan '+num(-x.dif,2)+'</span>':'<span class="pill warn">Sobran '+num(x.dif,2)+'</span>')))}</td></tr>`).join('')}</tbody></table></div>`;
+    $('#rbBack').onclick=()=>{reciboAbierto=null;renderRecepcion()};
+    $$('tr[data-i] [data-r]').forEach(inp=>inp.onchange=()=>{F.lines[+inp.closest('tr').dataset.i].rU=dec(inp.value);save();draw()});
+    $('#rbAll').onclick=()=>{F.lines.forEach(l=>l.rU=(+l.cant||0)*(+l.factor||1));save();draw()};
+    const hit=code=>{code=String(code||'').trim();if(!code)return null;const f=findByCode(code);if(!f){toast('Código '+code+' no existe en el sistema','err');return '❌ No existe: '+code}
+      const add=f.presIdx?presList(f.p)[f.presIdx].factor:1;let l=F.lines.find(x=>x.pid===f.p.id);
+      if(!l){l={id:uid(),desc:f.p.nombre+' (no facturado)',pid:f.p.id,match:'recibo',factor:1,cant:0,costo:0,descP:0,iva:+f.p.iva||0,inc:0,rU:0,act:false};F.lines.push(l);toast('⚠ '+f.p.nombre+' no viene en la factura','warn')}
+      l.rU=(+l.rU||0)+add;save();return (l.cant?'✔ ':'⚠ ')+f.p.nombre+' → '+num(l.rU)+' de '+num((+l.cant||0)*(+l.factor||1))};
+    $('#rbS').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();const v=$('#rbS').value;$('#rbS').value='';hit(v);draw();setTimeout(()=>$('#rbS').focus(),20)}};
+    $('#rbCam').onclick=async()=>{await scanCamera('Recibiendo · '+(r.factura||''),{continuo:true,onCode:hit});draw()};
+    $('#rbOk').onclick=async()=>{const pend=rows.filter(x=>x.rU===0&&x.fU>0).length;
+      if(!(await confirmBox(`Confirmar el recibo de la factura ${esc(r.factura||'')}: ${falt.length} con faltante${pend?' (incluye '+pend+' sin escanear, quedan en 0)':''}, ${sob.length} con sobrante o no facturados. Entra al inventario solo lo recibido.`,'Confirmar recibo')))return;
+      F.lines.forEach(l=>l.rec=(+l.rU||0)/(+l.factor||1));const res=aplicarFactura(F,r);reciboAbierto=null;compTab='hist';renderRecepcion();if(res.novedades.length)verNovedades(res)};
+    setTimeout(()=>{const s=$('#rbS'),ae=document.activeElement;if(s&&(!ae||ae===document.body))s.focus()},30)};
+  draw()}
+function drawHistCompras(){const L=DB.all('recepciones').filter(r=>r.estado!=='pendiente').sort((a,b)=>b.numero-a.numero);const conNov=L.filter(r=>(r.novedades||[]).length);
+  $('#cpB').innerHTML=`<div class="kpis"><div class="kpi"><small>Facturas ingresadas</small><div>${L.length}</div></div><div class="kpi"><small>Con novedades</small><div class="err">${conNov.length}</div></div><div class="kpi"><small>Faltantes por reclamar</small><div class="err">${money(-conNov.reduce((a,r)=>a+r.novedades.filter(n=>n.dif<0).reduce((x,n)=>x+n.valor,0),0))}</div></div></div>
+   <div class="tbl-wrap"><table class="t"><thead><tr><th>#</th><th>Ingreso</th><th>Proveedor</th><th>Factura</th><th>Origen</th><th class="r">Ítems</th><th class="r">Total</th><th class="r">Flete</th><th>Novedades</th><th>Recibió</th><th></th></tr></thead><tbody>
+   ${L.slice(0,200).map(r=>`<tr><td>${r.numero}</td><td>${fdt(r.fechaRecibo||r.fecha)}</td><td>${esc(r.empresa)}</td><td class="b">${esc(r.factura||'—')}</td><td><small>${esc(r.fuente||'manual')}</small></td><td class="r">${r.items.length}</td><td class="r b">${money(r.total)}</td><td class="r">${r.flete?money(r.flete):''}</td>
+     <td>${(r.novedades||[]).length?`<button class="btn sm dan" data-n="${r.id}">⚠ ${r.novedades.length}</button>`:'<span class="pill ok">Sin novedad</span>'}</td><td>${esc(r.recibio||r.usuario)}</td><td><button class="btn sm" data-rp="${r.id}">Imprimir</button></td></tr>`).join('')||'<tr><td colspan="11" class="empty">Sin facturas</td></tr>'}</tbody></table></div>`;
+  $$('[data-rp]').forEach(b=>b.onclick=()=>printRec(DB.get('recepciones',b.dataset.rp)));$$('[data-n]').forEach(b=>b.onclick=()=>verNovedades(DB.get('recepciones',b.dataset.n)))}
 
 function pickProduct(list,cb){let i=0;const m=Modal.open({title:'Seleccione producto',body:`<div class="list" id="ppL"></div>`,onKey:e=>{if(e.key==='ArrowDown'){i=Math.min(list.length-1,i+1);d()}else if(e.key==='ArrowUp'){i=Math.max(0,i-1);d()}else if(e.key==='Enter'){e.preventDefault();Modal.close(m);cb(list[i])}}});
   const d=()=>$('#ppL',m.el).innerHTML=list.map((p,k)=>`<div class="it ${k===i?'on':''}" data-k="${k}"><span>${esc(p.nombre)} <small class="mut">${esc(p.codigo)}</small></span><small>Stock ${num(stockTotal(p))}</small></div>`).join('');d();
