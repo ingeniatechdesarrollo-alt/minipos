@@ -998,7 +998,7 @@ function renderSugeridos(){
 /* =====================================================================
    ANÁLISIS DE VENTAS Y MERCADEO
    ===================================================================== */
-let anTab='productos',anData=null;
+let anTab='consulta',anData=null;
 function renderAnalisis(){
   const hoy=ymd(new Date());const us=DB.all('usuarios');
   $('#view').innerHTML=`<div class="page-head"><h2>Análisis de ventas, inventario y mercadeo</h2></div>
@@ -1007,13 +1007,14 @@ function renderAnalisis(){
   <label>Empresa<select id="aE"><option value="">Todas</option>${empresas().map(e=>`<option>${esc(e)}</option>`).join('')}</select></label><label>Línea<select id="aL"><option value="">Todas</option>${lineas().map(e=>`<option>${esc(e)}</option>`).join('')}</select></label>
   <label>Cajero<select id="aC"><option value="">Todos</option>${us.map(u=>`<option value="${u.id}">${esc(u.nombre)}</option>`).join('')}</select></label></div>
   <div class="kpis" id="aK"></div><div class="charts" id="aCh"></div>
-  <div class="card"><div class="tabs" id="aTabs">${[['productos','Producto por producto'],['lineas','Por línea'],['empresas','Por empresa'],['rotacion','Rotación y stock'],['abc','Análisis ABC'],['cajeros','Por cajero'],['clientes','Clientes'],['canasta','Canasta (se venden juntos)'],['sinmov','Sin movimiento']].map(([k,t])=>`<button data-t="${k}" class="${k===anTab?'on':''}">${t}</button>`).join('')}</div>
-  <div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn sm" id="aX" style="flex:0">Exportar esta tabla (CSV)</button></div><div id="aT"></div></div>`;
+  <div class="card"><div class="tabs" id="aTabs">${[['consulta','🔎 Consulta producto / línea'],['productos','Producto por producto'],['lineas','Por línea'],['empresas','Por empresa'],['rotacion','Rotación y stock'],['abc','Análisis ABC'],['cajeros','Por cajero'],['clientes','Clientes'],['canasta','Canasta (se venden juntos)'],['sinmov','Sin movimiento']].map(([k,t])=>`<button data-t="${k}" class="${k===anTab?'on':''}">${t}</button>`).join('')}</div>
+  <div class="row" id="aBar" style="justify-content:flex-end;margin-bottom:8px"><input id="aF" placeholder="🔎 Filtrar esta tabla (producto, línea, empresa…)" style="max-width:360px"><button class="btn sm" id="aX" style="flex:0">Exportar esta tabla (CSV)</button></div><div id="aT"></div></div>`;
   const run=()=>{charts.forEach(c=>c.destroy());charts=[];anData=analizar({desde:$('#aD').value,hasta:$('#aH').value,empresa:$('#aE').value,linea:$('#aL').value,cajero:$('#aC').value});drawKpis();drawCharts();drawTab()};
   ['aD','aH','aE','aL','aC'].forEach(id=>$('#'+id).onchange=run);
   $$('[data-pr]').forEach(b=>b.onclick=()=>{const v=b.dataset.pr;$('#aH').value=hoy;$('#aD').value=v==='mes'?hoy.slice(0,8)+'01':addDays(hoy,-v);run()});
   $$('#aTabs button').forEach(b=>b.onclick=()=>{anTab=b.dataset.t;$$('#aTabs button').forEach(x=>x.classList.toggle('on',x===b));drawTab()});
-  $('#aX').onclick=()=>{const t=tabTable();downloadCSV('analisis_'+anTab,[t.h.map(x=>x[0]),...t.rows.map(r=>r.map(c=>typeof c==='object'&&c!==null?c.v:c))])};
+  $('#aF').oninput=()=>drawTab();
+  $('#aX').onclick=()=>{const t=tabTable();t.rows=filteredRows(t);downloadCSV('analisis_'+anTab,[t.h.map(x=>x[0]),...t.rows.map(r=>r.map(c=>typeof c==='object'&&c!==null?c.v:c))])};
   run()}
 function analizar(f){
   const dias=Math.max(1,daysBetween(f.desde,f.hasta));
@@ -1056,6 +1057,56 @@ function drawCharts(){const a=anData;const box=$('#aCh');
   const me=Object.entries(a.medios).sort((x,y)=>y[1]-x[1]);mk('c4',{type:'doughnut',data:{labels:me.map(x=>x[0]),datasets:[{data:me.map(x=>x[1]),backgroundColor:PAL}]},options:dOpt});
   const t10=a.prodsArr.slice(0,10);mk('c5',{type:'bar',data:{labels:t10.map(p=>p.nombre.slice(0,24)),datasets:[{data:t10.map(p=>p.t),backgroundColor:PAL[2],borderRadius:4}]},options:{...mOpt,indexAxis:'y',scales:{x:mOpt.scales.y}}});
   const dn=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];mk('c6',{type:'bar',data:{labels:dn,datasets:[{data:a.dow,backgroundColor:PAL[0],borderRadius:4}]},options:mOpt})}
+/* --- Consulta consolidada de producto o línea --- */
+let consSel=null,consChart=null;
+const estadoPill=(u,di)=>u<=0?'<span class="pill err">Sin movimiento</span>':(di<3?'<span class="pill err">Agotándose</span>':(di>60?'<span class="pill warn">Sobre-stock</span>':'<span class="pill ok">Normal</span>'));
+function consolidar(pids){const f=anData.f,dias=anData.dias,set=new Set(pids),P={},dia={};let tickets=0;
+  pids.forEach(id=>P[id]={u:0,t:0,c:0,n:0,pres:{},ult:null});for(let d=f.desde;d<=f.hasta;d=addDays(d,1))dia[d]=0;
+  DB.all('ventas').forEach(v=>{if(v.estado==='anulada'||(f.cajero&&v.usuario!==f.cajero))return;const fd=ymd(v.fecha);if(fd<f.desde||fd>f.hasta)return;let hit=false;
+    v.items.forEach(it=>{if(!set.has(it.pid))return;hit=true;const x=P[it.pid],t=it.precio*it.cant;x.u+=it.cant*it.factor;x.t+=t;x.c+=it.costo*it.cant;x.n++;
+      const pr=x.pres[it.pres]||(x.pres[it.pres]={cant:0,t:0,u:0});pr.cant+=it.cant;pr.u+=it.cant*it.factor;pr.t+=t;if(!x.ult||v.fecha>x.ult)x.ult=v.fecha;dia[fd]+=t});if(hit)tickets++});
+  DB.all('devoluciones').forEach(d=>{const fd=ymd(d.fecha);if(fd<f.desde||fd>f.hasta)return;d.items.forEach(it=>{if(!set.has(it.pid))return;const x=P[it.pid],t=it.precio*it.cant;x.u-=it.cant*it.factor;x.t-=t;x.c-=it.costo*it.cant;dia[fd]-=t})});
+  const rows=pids.map(id=>{const p=DB.get('productos',id),x=P[id],st=stockTotal(p),vpd=x.u/dias;return{p,...x,st,vpd,di:vpd>0?st/vpd:Infinity,rot:st>0?x.u/st:0,mg:x.t?(x.t-x.c)/x.t:0}}).sort((a,b)=>b.t-a.t);
+  return{rows,dia,tickets}}
+function drawConsulta(){
+  $('#aT').innerHTML=`<div class="grid2"><label>Buscar producto (nombre, código o palabra clave)<input id="cnQ" placeholder="ej.: aguila lai · boston · 7702…" autocomplete="off"></label>
+    <label>…o consolidar una línea completa<select id="cnL"><option value="">— Seleccione una línea —</option>${lineas().map(l=>`<option ${consSel&&consSel.tipo==='linea'&&consSel.id===l?'selected':''}>${esc(l)}</option>`).join('')}</select></label></div>
+    <div class="list" id="cnR" style="display:none;max-height:260px;margin-top:6px"></div><div id="cnOut" style="margin-top:14px"></div>`;
+  const q=$('#cnQ');
+  q.oninput=()=>{const r=q.value.trim()?searchProducts(q.value,12):[];const L=$('#cnR');L.style.display=r.length?'block':'none';
+    L.innerHTML=r.map(p=>`<div class="it" data-id="${p.id}"><span><b>${esc(p.nombre)}</b> <small class="mut">${esc(p.codigo)} · ${esc(p.linea)} · ${esc(p.empresa)}</small></span><small>Stock ${num(stockTotal(p),2)}</small></div>`).join('')};
+  q.onkeydown=e=>{if(e.key!=='Enter')return;e.preventDefault();const f=findByCode(q.value.trim());const r=f?[f.p]:searchProducts(q.value,1);if(r[0]){consSel={tipo:'producto',id:r[0].id};$('#cnR').style.display='none';drawConsultaOut()}};
+  $('#cnR').onclick=e=>{const it=e.target.closest('[data-id]');if(!it)return;consSel={tipo:'producto',id:it.dataset.id};$('#cnR').style.display='none';q.value='';$('#cnL').value='';drawConsultaOut()};
+  $('#cnL').onchange=()=>{consSel=$('#cnL').value?{tipo:'linea',id:$('#cnL').value}:null;drawConsultaOut()};
+  drawConsultaOut();setTimeout(()=>q.focus(),30)}
+function drawConsultaOut(){const out=$('#cnOut');if(!out)return;if(consChart){consChart.destroy();consChart=null}
+  const k=(t,v,e='')=>`<div class="kpi"><small>${t}</small><div>${v}</div><em>${e}</em></div>`;const a=anData;
+  if(!consSel){out.innerHTML='<div class="empty">Busque un producto o elija una línea para ver su consolidado del período seleccionado arriba.</div>';return}
+  if(consSel.tipo==='producto'){const p=DB.get('productos',consSel.id);if(!p){out.innerHTML='';return}
+    const {rows,dia,tickets}=consolidar([p.id]);const r=rows[0];const rank=a.prodsArr.findIndex(x=>x.pid===p.id);const ab=a.prodsArr[rank];
+    out.innerHTML=`<div class="page-head" style="margin-bottom:8px"><div><h3>${esc(p.nombre)}</h3><span class="mut">${esc(p.codigo)} · ${esc(p.linea)} · ${esc(p.empresa)} · ${a.f.desde} a ${a.f.hasta}</span></div><div>${estadoPill(r.u,r.di)} ${ab?`<span class="pill">Clase ${ab.abc}</span>`:''} <button class="btn sm" id="cnK">Ver kárdex</button></div></div>
+     <div class="kpis">${k('Unidades vendidas',num(r.u,2)+' '+esc(p.unidad||'und'),r.n+' líneas · '+tickets+' tickets')+k('Venta',money(r.t),'Participación '+pct(a.total?r.t/a.total:0))+k('Utilidad bruta',money(r.t-r.c),'Margen '+pct(r.mg))
+      +k('Venta promedio / día',num(r.vpd,2)+' und',money(r.t/a.dias)+' por día')+k('Stock actual',num(r.st,2),'Sala '+num(p.stockSala,2)+' · Bodega '+num(p.stockBodega,2))
+      +k('Días de inventario',isFinite(r.di)?num(r.di,1)+' días':'∞','Mínimo '+num(p.minimo))+k('Rotación del período',num(r.rot,2)+' veces','unidades vendidas / stock')
+      +k('Ranking en ventas',rank>=0?'#'+(rank+1)+' de '+a.prodsArr.length:'—','')+k('Última venta',r.ult?fdt(r.ult):'—','')}</div>
+     <div class="grid2"><div class="card"><h4 style="margin-top:0">Por presentación</h4><table class="t"><thead><tr><th>Presentación</th><th class="r">Cantidad</th><th class="r">Und base</th><th class="r">Venta</th></tr></thead><tbody>
+      ${Object.entries(r.pres).map(([n,x])=>`<tr><td>${esc(n)}</td><td class="r">${num(x.cant,3)}</td><td class="r">${num(x.u,2)}</td><td class="r">${money(x.t)}</td></tr>`).join('')||'<tr><td colspan="4" class="mut">Sin ventas en el período</td></tr>'}</tbody></table></div>
+      <div class="card" style="height:260px;display:flex;flex-direction:column"><h4 style="margin:0 0 6px">Ventas por día</h4><canvas id="cnC"></canvas></div></div>`;
+    $('#cnK').onclick=()=>kardexModal(p);drawConsChart(dia);return}
+  const L=consSel.id;const pids=DB.all('productos').filter(p=>p.activo!==false&&(p.linea||'—')===L).map(p=>p.id);const {rows,dia,tickets}=consolidar(pids);
+  const t=rows.reduce((s,r)=>s+r.t,0),c=rows.reduce((s,r)=>s+r.c,0),u=rows.reduce((s,r)=>s+r.u,0),inv=rows.reduce((s,r)=>s+Math.max(0,r.st)*(+r.p.costo||0),0),cvd=c/a.dias;
+  out.innerHTML=`<div class="page-head" style="margin-bottom:8px"><div><h3>Línea: ${esc(L)}</h3><span class="mut">${pids.length} referencias · ${a.f.desde} a ${a.f.hasta}</span></div></div>
+   <div class="kpis">${k('Venta de la línea',money(t),'Participación '+pct(a.total?t/a.total:0))+k('Utilidad bruta',money(t-c),'Margen '+pct(t?(t-c)/t:0))+k('Unidades vendidas',num(u,2),tickets+' tickets')
+    +k('Inventario a costo',money(inv),'')+k('Días de inventario',cvd?num(inv/cvd,1)+' días':'∞','inventario / costo vendido diario')+k('Rotación del período',inv?num(c/inv,2)+' veces':'—','costo vendido / inventario')
+    +k('Sin movimiento',rows.filter(r=>r.u<=0).length+' ref.','')+k('Agotándose (< 3 días)',rows.filter(r=>r.u>0&&r.di<3).length+' ref.','')}</div>
+   <div class="card" style="height:240px;display:flex;flex-direction:column;margin-bottom:10px"><h4 style="margin:0 0 6px">Ventas de la línea por día</h4><canvas id="cnC"></canvas></div>
+   <div class="tbl-wrap"><table class="t"><thead><tr><th>Producto</th><th>Empresa</th><th class="r">Unidades</th><th class="r">Venta</th><th class="r">Margen</th><th class="r">% línea</th><th class="r">Prom/día</th><th class="r">Stock</th><th class="r">Días inv.</th><th class="r">Rotación</th><th>Estado</th></tr></thead><tbody>
+   ${rows.map(r=>`<tr data-id="${r.p.id}" style="cursor:pointer"><td class="b">${esc(r.p.nombre)}</td><td>${esc(r.p.empresa)}</td><td class="r">${num(r.u,2)}</td><td class="r">${money(r.t)}</td><td class="r">${pct(r.mg)}</td><td class="r">${pct(t?r.t/t:0)}</td><td class="r">${num(r.vpd,1)}</td><td class="r">${num(r.st,2)}</td><td class="r">${isFinite(r.di)?num(r.di,1):'∞'}</td><td class="r">${num(r.rot,2)}</td><td>${estadoPill(r.u,r.di)}</td></tr>`).join('')}</tbody></table></div><small class="mut">Clic en un producto para ver su ficha.</small>`;
+  $$('tr[data-id]',out).forEach(tr=>tr.onclick=()=>{consSel={tipo:'producto',id:tr.dataset.id};$('#cnL').value='';drawConsultaOut()});drawConsChart(dia)}
+function drawConsChart(dia){const cv=$('#cnC');if(!cv||!window.Chart)return;const dl=Object.keys(dia).sort();
+  consChart=new Chart(cv,{type:'bar',data:{labels:dl.map(d=>d.slice(5)),datasets:[{data:dl.map(d=>dia[d]),backgroundColor:PAL[0],borderRadius:3}]},
+    options:{maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>money(c.parsed.y)}}},scales:{y:{ticks:{callback:v=>'$'+(v>=1e6?(v/1e6).toFixed(1)+'M':(v/1e3).toFixed(0)+'k')}}}}})}
+
 function tabTable(){const a=anData;const m=v=>({v:Math.round(v),h:money(v)}),p=v=>({v:(v*100).toFixed(1),h:pct(v)}),n=(v,d=0)=>({v:+(+v).toFixed(d),h:num(v,d)});
   const stockOf=pid=>{const x=DB.get('productos',pid);return x?stockTotal(x):0};
   const grp=key=>{const G={};a.prodsArr.forEach(x=>{const k=x[key]||'—';const g=G[k]||(G[k]={k,u:0,t:0,c:0,refs:0});g.u+=x.u;g.t+=x.t;g.c+=x.c;g.refs++});return Object.values(G).sort((x,y)=>y.t-x.t)};
@@ -1071,7 +1122,9 @@ function tabTable(){const a=anData;const m=v=>({v:Math.round(v),h:money(v)}),p=v
     case'canasta':return{h:[['Producto A'],['Producto B'],['Veces juntos',1],['% de tickets',1]],rows:Object.entries(a.pares).sort((x,y)=>y[1]-x[1]).slice(0,40).map(([k,c])=>{const[x,y]=k.split('|');const px=DB.get('productos',x),py=DB.get('productos',y);return[px?px.nombre:'?',py?py.nombre:'?',n(c),p(a.tickets?c/a.tickets:0)]})};
     case'sinmov':return{h:[['Código'],['Producto'],['Empresa'],['Stock',1],['Inv. a costo',1]],rows:DB.all('productos').filter(x=>x.activo!==false&&!a.P[x.id]&&stockTotal(x)>0&&(!a.f.empresa||x.empresa===a.f.empresa)&&(!a.f.linea||x.linea===a.f.linea)).map(x=>[x.codigo,x.nombre,x.empresa,n(stockTotal(x)),m(stockTotal(x)*x.costo)])};
   }}
-function drawTab(){const t=tabTable();const cell=c=>typeof c==='object'&&c!==null?c.h:c;
+function filteredRows(t){const w=norm(($('#aF')||{}).value||'').split(/\s+/).filter(Boolean);if(!w.length)return t.rows;
+  return t.rows.filter(r=>{const s=norm(r.map(c=>typeof c==='object'&&c!==null?c.h:String(c).replace(/<[^>]+>/g,'')).join(' '));return w.every(x=>s.includes(x))})}
+function drawTab(){$('#aBar').style.display=anTab==='consulta'?'none':'flex';if(anTab==='consulta')return drawConsulta();const t=tabTable();t.rows=filteredRows(t);
   $('#aT').innerHTML=`<div class="tbl-wrap"><table class="t"><thead><tr>${t.h.map(h=>`<th class="${h[1]?'r':''}">${h[0]}</th>`).join('')}</tr></thead><tbody>${t.rows.map(r=>`<tr>${r.map((c,i)=>`<td class="${t.h[i][1]?'r':''}">${typeof c==='object'&&c!==null?c.h:(t.h[i][0]==='Estado'||t.h[i][0]==='Clase'?c:esc(c))}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${t.h.length}" class="empty">Sin datos</td></tr>`}</tbody></table></div>`}
 
 /* =====================================================================
