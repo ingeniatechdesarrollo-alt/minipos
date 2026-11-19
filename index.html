@@ -148,7 +148,6 @@ table.cart tr{cursor:pointer}
 /* print */
 #print-area{display:none}
 @media print{
-  @page{size:80mm auto;margin:0}
   body *{visibility:hidden}
   #print-area,#print-area *{visibility:visible}
   #print-area{display:block;position:absolute;left:0;top:0;width:var(--tk);padding:2mm 3mm;font:11.5px/1.25 "Courier New",ui-monospace,monospace;color:#000}
@@ -250,6 +249,7 @@ const can=min=>!!USER&&RANK[USER.rol]>=RANK[min];
 
 // ---------- Datos demo ----------
 const MARCAS_DEMO=['Boston','Marlboro','Coca-Cola','Cristal','Gatorade','Pony Malta','Águila','Póker','Colanta','Bimbo','Diana','Manuelita','Premier','Sello Rojo','Jet','Margarita','Detodito','Festival','Bon Bon Bum','Trident','Van Camps','Zenú','Rey','Familia','Fab','Duracell','Bic'];
+const empresasDemo=ps=>[...new Set(ps.map(p=>p.empresa))];
 const marcaDe=n=>MARCAS_DEMO.find(m=>n.includes(m))||'';
 function seed(){
   const users=[{usuario:'admin',nombre:'Administrador',clave:'1234',rol:'admin'},{usuario:'supervisor',nombre:'Laura Supervisor',clave:'2222',rol:'admin_caja'},{usuario:'cajero1',nombre:'Andrés Cajero',clave:'1111',rol:'cajero'}];
@@ -320,7 +320,12 @@ function seed(){
         items,total,pagos,recibido:total,cambio:0,tipoDoc:'POS',estado:'ok'});
     }
   }
-  saveCfg({consecutivo:n});
+  // Pedidos (recibos) de ejemplo hace 18-35 días para que el sugerido tenga historia
+  const vend={};DB.all('ventas').forEach(v=>{if(new Date(v.fecha)>=new Date(Date.now()-30*864e5))v.items.forEach(it=>vend[it.pid]=(vend[it.pid]||0)+it.cant*it.factor)});
+  let rn=1;empresasDemo(prods).forEach(e=>{const f=new Date();f.setDate(f.getDate()-(18+Math.floor(Math.random()*18)));f.setHours(9,0,0,0);
+    const items=prods.filter(p=>p.empresa===e).map(p=>{const und=Math.max(1,Math.round((vend[p.id]||3)/30*20*(.6+Math.random()*.8)));return{pid:p.id,nombre:p.nombre,pres:p.unidad||'Unidad',cant:und,und,costo:p.costo,subtotal:und*p.costo}});
+    DB.put('recepciones',{numero:rn++,fecha:f.toISOString(),empresa:e,factura:'FV-'+(1000+rn),ubic:'bodega',usuario:'Demo',items,total:items.reduce((a,i)=>a+i.subtotal,0)})});
+  saveCfg({consecutivo:n,recConsecutivo:rn});
 }
 
 // ---------- Modales ----------
@@ -425,7 +430,10 @@ function openCajaModal(after){
 function printHTML(html,opts={}){const c=cfg();
   if(c.impresora.modo==='serial'){Printer.printHTML(html,opts).catch(e=>{toast('Impresora directa: '+e.message+' — se imprime por el navegador','err',6000);browserPrint(html)});return}
   browserPrint(html)}
-function browserPrint(html){document.documentElement.style.setProperty('--tk',cfg().papel==58?'48mm':'72mm');$('#print-area').innerHTML=html;setTimeout(()=>window.print(),60)}
+function setPage(sheet){let st=$('#pageSize');if(!st){st=document.createElement('style');st.id='pageSize';document.head.appendChild(st)}
+  st.textContent=sheet?'@media print{@page{size:letter;margin:12mm}#print-area{width:auto!important;font:12px/1.35 Arial,sans-serif!important;padding:0!important}#print-area table.sh{width:100%;border-collapse:collapse}#print-area table.sh th,#print-area table.sh td{border:1px solid #999;padding:4px 6px;text-align:left}#print-area table.sh .r{text-align:right}#print-area h2{font-size:18px}}':'@media print{@page{size:80mm auto;margin:0}}'}
+function printSheet(html){setPage(true);$('#print-area').innerHTML=html;setTimeout(()=>window.print(),60)}
+function browserPrint(html){setPage(false);document.documentElement.style.setProperty('--tk',cfg().papel==58?'48mm':'72mm');$('#print-area').innerHTML=html;setTimeout(()=>window.print(),60)}
 function ticketHTML(v,copia){
   const c=cfg();const ivaG={};
   v.items.forEach(it=>{const t=it.precio*it.cant;const b=t/(1+(+it.iva||0)/100);const g=ivaG[it.iva]=ivaG[it.iva]||{b:0,i:0};g.b+=b;g.i+=t-b});
@@ -987,21 +995,85 @@ function ventasPorProducto(desde,hasta){const m={};
   DB.all('ventas').forEach(v=>{if(v.estado==='anulada')return;const f=ymd(v.fecha);if(f<desde||f>hasta)return;v.items.forEach(it=>{m[it.pid]=(m[it.pid]||0)+it.cant*it.factor})});
   DB.all('devoluciones').forEach(d=>{const f=ymd(d.fecha);if(f<desde||f>hasta)return;d.items.forEach(it=>{m[it.pid]=(m[it.pid]||0)-it.cant*it.factor})});return m}
 function renderSugeridos(){
-  $('#view').innerHTML=`<div class="page-head"><h2>Sugeridos de pedido por empresa</h2><div class="row" style="flex:0;flex-wrap:nowrap"><button class="btn" id="sgP">Imprimir</button><button class="btn" id="sgX">Exportar CSV</button></div></div>
-  <div class="toolbar"><label>Empresa / proveedor<select id="sgE"><option value="">Todas</option>${empresas().map(e=>`<option>${esc(e)}</option>`).join('')}</select></label><label>Días de historia<input id="sgH" type="number" value="30"></label><label>Días a cubrir<input id="sgC" type="number" value="7"></label><label class="chk" style="min-width:auto"><input type="checkbox" id="sgS" checked> Solo con sugerido</label></div>
-  <p class="mut" style="margin-top:-6px">Sugerido = (venta promedio diaria × días a cubrir) + stock mínimo − stock actual. Se redondea a la presentación de compra más grande.</p><div id="sgT"></div>`;
-  const run=()=>{const e=$('#sgE').value,h=+$('#sgH').value||30,cv=+$('#sgC').value||7,only=$('#sgS').checked;const hoy=ymd(new Date());const vpp=ventasPorProducto(addDays(hoy,-h+1),hoy);
-    const rows=prods().filter(p=>!e||p.empresa===e).map(p=>{const vend=vpp[p.id]||0,vpd=vend/h,st=stockTotal(p);let sug=Math.max(0,Math.ceil(vpd*cv+(+p.minimo||0)-st));
-      const big=(p.presentaciones||[]).slice().sort((a,b)=>b.factor-a.factor)[0];let enPres='';if(big&&sug>0){const n=Math.ceil(sug/big.factor);enPres=n+' × '+big.nombre;sug=n*big.factor}
-      return{p,vend,vpd,st,dias:vpd>0?st/vpd:Infinity,sug,enPres,costo:sug*(+p.costo||0)}}).filter(r=>!only||r.sug>0).sort((a,b)=>(a.p.empresa||'').localeCompare(b.p.empresa||'')||a.dias-b.dias);
-    const groups={};rows.forEach(r=>{(groups[r.p.empresa||'Sin empresa']=groups[r.p.empresa||'Sin empresa']||[]).push(r)});
-    $('#sgT').innerHTML=Object.entries(groups).map(([g,rs])=>`<div class="card section"><div class="page-head" style="margin:0 0 8px"><h3>${esc(g)}</h3><b>Pedido estimado: ${money(rs.reduce((a,r)=>a+r.costo,0))}</b></div><div class="tbl-wrap"><table class="t"><thead><tr><th>Producto</th><th class="r">Vendido ${h}d</th><th class="r">Prom/día</th><th class="r">Stock</th><th class="r">Mínimo</th><th class="r">Días inv.</th><th class="r">Sugerido und</th><th>En presentación</th><th class="r">Costo est.</th></tr></thead><tbody>
-      ${rs.map(r=>`<tr><td class="b">${esc(r.p.nombre)}</td><td class="r">${num(r.vend)}</td><td class="r">${num(r.vpd,1)}</td><td class="r">${num(r.st)}</td><td class="r">${num(r.p.minimo)}</td><td class="r ${r.dias<3?'err b':(r.dias<cv?'warn':'')}">${isFinite(r.dias)?num(r.dias,1):'∞'}</td><td class="r b">${num(r.sug)}</td><td>${esc(r.enPres)}</td><td class="r">${money(r.costo)}</td></tr>`).join('')}</tbody></table></div></div>`).join('')||'<div class="empty">No hay sugeridos con estos filtros 🎉</div>';
-    return rows};
-  ['sgE','sgH','sgC','sgS'].forEach(id=>$('#'+id).onchange=run);
-  $('#sgX').onclick=()=>{const r=run();downloadCSV('sugerido_'+($('#sgE').value||'todas'),[['Empresa','Codigo','Producto','Vendido','PromDia','Stock','Minimo','DiasInv','SugeridoUnd','Presentacion','CostoEst'],...r.map(x=>[x.p.empresa,x.p.codigo,x.p.nombre,x.vend,x.vpd.toFixed(2),x.st,x.p.minimo,isFinite(x.dias)?x.dias.toFixed(1):'',x.sug,x.enPres,Math.round(x.costo)])])};
-  $('#sgP').onclick=()=>{const r=run();printHTML(`<div class="c b big">${esc(cfg().negocio)}</div><div class="c b">SUGERIDO DE PEDIDO</div><div>${esc($('#sgE').value||'Todas las empresas')}</div><div>${fdt(new Date())}</div><hr><table>${r.map(x=>`<tr><td>${esc(x.p.nombre)}</td><td class="r b">${x.enPres||num(x.sug)}</td></tr>`).join('')}</table><hr><div class="b">Total est. ${money(r.reduce((a,x)=>a+x.costo,0))}</div><div class="c">.</div>`)};
+  const S=sugState;
+  $('#view').innerHTML=`<div class="page-head"><h2>Sugerido de pedido por proveedor</h2><div class="row" style="flex:0;flex-wrap:nowrap"><button class="btn" id="sgT">🧾 Imprimir tirilla</button><button class="btn" id="sgP">🖨️ Imprimir pedido (hoja)</button><button class="btn" id="sgX">Exportar CSV</button></div></div>
+  <div class="toolbar"><label style="min-width:220px">1. Empresa / proveedor<select id="sgE"><option value="">— Seleccione la empresa —</option>${empresas().map(e=>`<option ${e===S.empresa?'selected':''}>${esc(e)}</option>`).join('')}</select></label>
+   <label>2. Línea<select id="sgL"></select></label><label style="min-width:220px">3. Producto<select id="sgPr"></select></label>
+   <label>Mostrar<select id="sgM">${[['todos','Todos los productos'],['agot','Agotados y por agotarse'],['pedir','Solo con sugerido']].map(([k,v])=>`<option value="${k}" ${k===S.mostrar?'selected':''}>${v}</option>`).join('')}</select></label>
+   <label style="max-width:120px">Historia (días)<input id="sgH" type="number" value="${S.hist}"></label></div>
+  <div id="sgProv"></div><div id="sgOut"></div>`;
+  const fillL=()=>{const e=$('#sgE').value;const ls=[...new Set(prods().filter(p=>p.empresa===e).map(p=>p.linea).filter(Boolean))].sort();
+    if(!ls.includes(S.linea))S.linea='';$('#sgL').innerHTML=`<option value="">${e?'Todas las líneas de '+esc(e):'—'}</option>`+ls.map(l=>`<option ${l===S.linea?'selected':''}>${esc(l)}</option>`).join('');$('#sgL').disabled=!e};
+  const fillP=()=>{const e=$('#sgE').value,l=$('#sgL').value;const ps=prods().filter(p=>p.empresa===e&&(!l||p.linea===l)).sort((a,b)=>a.nombre.localeCompare(b.nombre));
+    if(!ps.some(p=>p.id===S.producto))S.producto='';$('#sgPr').innerHTML=`<option value="">${e?'Todos ('+ps.length+')':'—'}</option>`+ps.map(p=>`<option value="${p.id}" ${p.id===S.producto?'selected':''}>${esc(p.nombre)}</option>`).join('');$('#sgPr').disabled=!e};
+  fillL();fillP();
+  $('#sgE').onchange=()=>{S.empresa=$('#sgE').value;S.linea='';S.producto='';S.pedir={};fillL();fillP();run()};
+  $('#sgL').onchange=()=>{S.linea=$('#sgL').value;S.producto='';fillP();run()};
+  $('#sgPr').onchange=()=>{S.producto=$('#sgPr').value;run()};
+  $('#sgM').onchange=()=>{S.mostrar=$('#sgM').value;run()};$('#sgH').onchange=()=>{S.hist=Math.max(7,+$('#sgH').value||30);run()};
+  let rows=[];
+  const run=()=>{const out=$('#sgOut'),pv=$('#sgProv');
+    if(!S.empresa){pv.innerHTML='';out.innerHTML='<div class="empty"><div style="font-size:38px">🏭</div>Seleccione primero la <b>empresa / proveedor</b> para calcular el pedido sugerido.</div>';rows=[];return}
+    const prov=provCfg(S.empresa);
+    pv.innerHTML=`<div class="card section"><div class="row" style="align-items:end"><div style="flex:2"><b>${esc(S.empresa)}</b><br><small class="mut">Ciclo del proveedor: cada cuánto le hace pedido / cada cuánto le entrega. El sugerido debe cubrir hasta la siguiente entrega.</small></div>
+      <label>Entrega cada (días)<input id="pvC" type="number" value="${prov.ciclo}"></label><label>Tarda en llegar (días)<input id="pvE" type="number" value="${prov.entrega}"></label>
+      <label>Nivel de servicio<select id="pvZ">${[[1.28,'90%'],[1.65,'95%'],[2.05,'98%']].map(([z,t])=>`<option value="${z}" ${+prov.z===z?'selected':''}>${t}</option>`).join('')}</select></label><button class="btn" id="pvS">Guardar</button></div></div>`;
+    $('#pvS').onclick=()=>{const c=cfg();const pr=Object.assign({},c.proveedores||{});pr[S.empresa]={ciclo:Math.max(1,+$('#pvC').value||20),entrega:Math.max(0,+$('#pvE').value||0),z:+$('#pvZ').value};saveCfg({proveedores:pr});toast('Ciclo de '+S.empresa+' guardado');run()};
+    const U=unitsByDay();const ps=prods().filter(p=>p.empresa===S.empresa&&(!S.linea||p.linea===S.linea)&&(!S.producto||p.id===S.producto));
+    rows=ps.map(p=>sugerirProducto(p,prov,S.hist,U)).sort((a,b)=>a.orden-b.orden||a.di-b.di);
+    const vis=rows.filter(r=>S.mostrar==='agot'?(r.estado==='agotado'||r.estado==='riesgo'):(S.mostrar==='pedir'?pedirDe(r)>0:true));
+    const tot=rows.reduce((a,r)=>a+pedirDe(r)*(+r.p.costo||0),0);
+    out.innerHTML=`<div class="kpis"><div class="kpi"><small>Productos</small><div>${rows.length}</div></div><div class="kpi"><small>Agotados</small><div class="err">${rows.filter(r=>r.estado==='agotado').length}</div></div>
+      <div class="kpi"><small>Por agotarse</small><div class="warn">${rows.filter(r=>r.estado==='riesgo').length}</div><em>no alcanzan hasta la entrega</em></div><div class="kpi"><small>A pedir</small><div>${rows.filter(r=>pedirDe(r)>0).length} ref.</div></div>
+      <div class="kpi"><small>Valor del pedido</small><div>${money(tot)}</div><em>a costo</em></div></div>
+     <div class="tbl-wrap" style="max-height:none"><table class="t"><thead><tr><th>Producto</th><th>Línea</th><th class="r">Stock</th><th class="r">Venta/día</th><th class="r">Días inv.</th><th>Estado</th><th>Último pedido</th><th>Análisis y recomendación</th><th class="r">Sugerido</th><th style="width:100px">Pedir (und)</th><th>Presentación</th><th class="r">Costo</th></tr></thead><tbody>
+     ${vis.map(r=>`<tr data-id="${r.p.id}"><td class="b">${esc(r.p.nombre)}<br><small class="mut">${esc(r.p.codigo)}</small></td><td>${esc(r.p.linea)}</td><td class="r ${r.st<=0?'err b':''}">${num(r.st,2)}</td><td class="r">${num(r.mean,2)}</td>
+       <td class="r">${isFinite(r.di)?num(r.di,1):'∞'}</td><td>${ESTADOS[r.estado]}</td><td><small>${r.ult?fdt(r.ult.fecha).slice(0,10)+'<br>'+num(r.ult.und)+' und'+(r.dur!=null?' · duró '+r.dur+' d':''):'—'}</small></td>
+       <td style="max-width:360px">${REC[r.rec]} <small>${r.nota}</small></td><td class="r b">${num(r.sug)}</td><td><input data-q="${r.p.id}" inputmode="numeric" value="${pedirDe(r)}"></td><td><small>${esc(presTxt(r.p,pedirDe(r)))}</small></td><td class="r">${money(pedirDe(r)*(+r.p.costo||0))}</td></tr>`).join('')||'<tr><td colspan="12" class="empty">Nada para mostrar con este filtro</td></tr>'}</tbody></table></div>
+     <p class="mut"><b>Cómo se calcula:</b> venta promedio diaria de los últimos ${S.hist} días × (${prov.ciclo} días de ciclo + ${prov.entrega} de entrega) + stock de seguridad (variabilidad de la venta al ${({1.28:'90',1.65:'95',2.05:'98'})[prov.z]||95}%) − stock actual. Esa necesidad se compara con tu último pedido (y cuántos días te duró): si necesitas más de un 10 % por encima, se recomienda <b>subir</b>; si es más de un 10 % por debajo (rotó lento), <b>bajar</b>. Puede corregir la columna «Pedir» antes de imprimir.</p>`;
+    $$('[data-q]',out).forEach(i=>i.onchange=()=>{S.pedir[i.dataset.q]=Math.max(0,nkg(i.value));run()})};
+  const lines=()=>rows.filter(r=>pedirDe(r)>0);
+  $('#sgX').onclick=()=>{if(!S.empresa)return toast('Seleccione la empresa','warn');downloadCSV('sugerido_'+S.empresa,[['Codigo','Producto','Linea','Stock','VentaDia','DiasInv','Estado','UltimoPedido','DuroDias','Recomendacion','Sugerido','Pedir','Presentacion','Costo'],...rows.map(r=>[r.p.codigo,r.p.nombre,r.p.linea,r.st,r.mean.toFixed(2),isFinite(r.di)?r.di.toFixed(1):'',r.estado,r.ult?r.ult.und:'',r.dur??'',r.rec,r.sug,pedirDe(r),presTxt(r.p,pedirDe(r)),Math.round(pedirDe(r)*(+r.p.costo||0))])])};
+  $('#sgT').onclick=()=>{if(!S.empresa)return toast('Seleccione la empresa','warn');const L=lines();
+    printHTML(`<div class="c b big">${esc(cfg().negocio)}</div><div class="c b">PEDIDO SUGERIDO</div><div class="c">${esc(S.empresa)}${S.linea?' · '+esc(S.linea):''}</div><div>${fdt(new Date())}</div><hr><table>${L.map(r=>`<tr><td colspan="2">${esc(r.p.nombre)}</td></tr><tr><td>${esc(presTxt(r.p,pedirDe(r)))}</td><td class="r">${money(pedirDe(r)*(+r.p.costo||0))}</td></tr>`).join('')}</table><hr><table><tr><td class="b">Referencias</td><td class="r">${L.length}</td></tr><tr><td class="b">TOTAL EST.</td><td class="r b">${money(L.reduce((a,r)=>a+pedirDe(r)*(+r.p.costo||0),0))}</td></tr></table><div class="c">.</div>`)};
+  $('#sgP').onclick=()=>{if(!S.empresa)return toast('Seleccione la empresa','warn');const L=lines();const c=cfg();
+    printSheet(`<div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2 style="margin:0">${esc(c.negocio)}</h2><div>NIT ${esc(c.nit)} · ${esc(c.direccion)} · Tel. ${esc(c.telefono)}</div></div><div style="text-align:right"><h2 style="margin:0">PEDIDO SUGERIDO</h2><div>${fdt(new Date())}</div></div></div>
+      <p><b>Proveedor:</b> ${esc(S.empresa)}${S.linea?' &nbsp; <b>Línea:</b> '+esc(S.linea):''}</p>
+      <table class="sh"><thead><tr><th>#</th><th>Código</th><th>Producto</th><th>Línea</th><th class="r">Stock</th><th>Cantidad a pedir</th><th class="r">Unidades</th><th class="r">Costo est.</th></tr></thead><tbody>
+      ${L.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.p.codigo)}</td><td>${esc(r.p.nombre)}</td><td>${esc(r.p.linea)}</td><td class="r">${num(r.st,2)}</td><td><b>${esc(presTxt(r.p,pedirDe(r)))}</b></td><td class="r">${num(pedirDe(r))}</td><td class="r">${money(pedirDe(r)*(+r.p.costo||0))}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td colspan="6" class="r b">TOTAL ESTIMADO</td><td class="r b">${num(L.reduce((a,r)=>a+pedirDe(r),0))}</td><td class="r b">${money(L.reduce((a,r)=>a+pedirDe(r)*(+r.p.costo||0),0))}</td></tr></tfoot></table>
+      <br><br><div style="display:flex;justify-content:space-between"><div>_______________________<br>Elaboró</div><div>_______________________<br>Proveedor / vendedor</div></div>`)};
   run()}
+let sugState={empresa:'',linea:'',producto:'',mostrar:'todos',hist:30,pedir:{}};
+const ESTADOS={agotado:'<span class="pill err">Agotado</span>',riesgo:'<span class="pill warn">Por agotarse</span>',normal:'<span class="pill ok">Normal</span>',sobre:'<span class="pill">Sobre-stock</span>',sinventa:'<span class="pill">Sin ventas</span>'};
+const REC={subir:'<span class="pill err">⬆ Subir</span>',bajar:'<span class="pill">⬇ Bajar</span>',mantener:'<span class="pill ok">= Mantener</span>',nopedir:'<span class="pill">No pedir</span>',pedir:'<span class="pill warn">Pedir</span>'};
+const pedirDe=r=>sugState.pedir[r.p.id]!=null?sugState.pedir[r.p.id]:r.sug;
+function provCfg(e){const p=(cfg().proveedores||{})[e]||{};return{ciclo:+p.ciclo||20,entrega:p.entrega!=null?+p.entrega:2,z:+p.z||1.65}}
+function presTxt(p,und){if(!(und>0))return '—';const big=(p.presentaciones||[]).slice().sort((a,b)=>b.factor-a.factor)[0];
+  if(!big||big.factor<=1)return num(und)+' '+(p.unidad||'und');const n=Math.floor(und/big.factor),r=Math.round((und-n*big.factor)*1000)/1000;
+  return (n?n+' × '+big.nombre:'')+(n&&r?' + ':'')+(r?num(r)+' und':'')}
+function unitsByDay(){const U={};const add=(pid,d,u)=>{const m=U[pid]||(U[pid]={});m[d]=(m[d]||0)+u};
+  DB.all('ventas').forEach(v=>{if(v.estado==='anulada')return;const d=ymd(v.fecha);v.items.forEach(it=>add(it.pid,d,it.cant*it.factor))});
+  DB.all('devoluciones').forEach(x=>{const d=ymd(x.fecha);x.items.forEach(it=>add(it.pid,d,-it.cant*it.factor))});return U}
+function lastPurchase(pid){let best=null;DB.all('recepciones').forEach(r=>(r.items||[]).forEach(it=>{if(it.pid===pid&&(!best||r.fecha>best.fecha))best={fecha:r.fecha,und:+it.und||0,numero:r.numero}}));return best}
+// Sugerido estadístico: demanda media × (ciclo + entrega) + stock de seguridad (z·σ·√cobertura) − stock, y lectura del último pedido
+function sugerirProducto(p,prov,hist,U){
+  const hoy=ymd(new Date()),m=U[p.id]||{},ini=addDays(hoy,-hist+1);const serie=[];for(let d=ini;d<=hoy;d=addDays(d,1))serie.push(m[d]||0);
+  const mean=serie.reduce((a,b)=>a+b,0)/serie.length,sd=Math.sqrt(serie.reduce((a,b)=>a+(b-mean)**2,0)/serie.length);
+  const st=stockTotal(p),cob=prov.ciclo+prov.entrega,ss=Math.ceil(prov.z*sd*Math.sqrt(cob));const di=mean>0?st/mean:Infinity;
+  let sug=Math.max(0,Math.ceil(mean*cob+ss-st));const big=(p.presentaciones||[]).slice().sort((a,b)=>b.factor-a.factor)[0];
+  if(sug>0&&big&&big.factor>1&&!p.pesable)sug=Math.ceil(sug/big.factor)*big.factor;
+  const estado=mean<=0?(st<=0?'agotado':'sinventa'):(st<=0?'agotado':(di<prov.entrega+Math.max(2,prov.ciclo*.25)?'riesgo':(di>prov.ciclo*2.5?'sobre':'normal')));
+  const ult=lastPurchase(p.id);let dur=null,rec=sug>0?'pedir':'nopedir',nota='';const ideal=Math.ceil(mean*cob+ss);
+  if(ult&&ult.und>0){const d0=ymd(ult.fecha);let cum=0,d=d0,dias=0;while(d<=hoy){cum+=m[d]||0;dias++;if(cum>=ult.und){dur=dias;break}d=addDays(d,1)}
+    const pas=daysBetween(d0,hoy),vr=Math.round((ideal-ult.und)/ult.und*100);
+    const lect=dur!=null?`Pediste ${num(ult.und)} y se vendieron en <b>${dur} días</b> (tu ciclo es de ${prov.ciclo}).`:`Pediste ${num(ult.und)} hace ${pas} días y van ${num(cum)} vendidas.`;
+    rec=vr>10?'subir':(vr<-10?'bajar':'mantener');
+    nota=`${lect} Para ${cob} días necesitas ~<b>${num(ideal)}</b> (${vr>0?'+':''}${vr}% frente a tu último pedido)`+(sug>0?(st>0?`; con ${num(st,2)} en stock, pide <b>${num(sug)}</b>.`:`; pide <b>${num(sug)}</b>.`):'. Con el stock actual no necesitas pedir.');
+    if(sug<=0)rec='nopedir'}
+  else nota=mean>0?`Sin pedidos registrados. Vende ${num(mean,1)}/día; para ${cob} días necesita ~${num(ideal)} (incl. ${num(ss)} de seguridad)${sug>0?'; pide <b>'+num(sug)+'</b>.':'. Le alcanza con el stock.'}`:'Sin ventas en el período.';
+  if(estado==='agotado'&&mean>0)nota='<b class="err">Agotado.</b> '+nota;
+  const orden={agotado:0,riesgo:1,normal:2,sobre:3,sinventa:4}[estado];return{p,mean,sd,st,di,ss,sug,estado,ult,dur,rec,nota,orden}}
 
 /* =====================================================================
    ANÁLISIS DE VENTAS Y MERCADEO
@@ -1012,13 +1084,20 @@ function renderAnalisis(){
   $('#view').innerHTML=`<div class="page-head"><h2>Análisis de ventas, inventario y mercadeo</h2></div>
   <div class="toolbar"><label>Desde<input type="date" id="aD" value="${addDays(hoy,-29)}"></label><label>Hasta<input type="date" id="aH" value="${hoy}"></label>
   <div class="row" style="flex:0;flex-wrap:nowrap;gap:4px">${[['Hoy',0],['7 días',6],['30 días',29],['90 días',89]].map(([t,n])=>`<button class="btn sm" data-pr="${n}">${t}</button>`).join('')}<button class="btn sm" data-pr="mes">Este mes</button></div>
-  <label>Empresa<select id="aE"><option value="">Todas</option>${empresas().map(e=>`<option>${esc(e)}</option>`).join('')}</select></label><label>Línea<select id="aL"><option value="">Todas</option>${lineas().map(e=>`<option>${esc(e)}</option>`).join('')}</select></label>
+  <label>1. Empresa<select id="aE"><option value="">Todas las empresas</option>${empresas().map(e=>`<option>${esc(e)}</option>`).join('')}</select></label><label>2. Línea<select id="aL"></select></label><label style="min-width:200px">3. Producto<select id="aP"></select></label>
   <label>Cajero<select id="aC"><option value="">Todos</option>${us.map(u=>`<option value="${u.id}">${esc(u.nombre)}</option>`).join('')}</select></label></div>
   <div class="kpis" id="aK"></div><div class="charts" id="aCh"></div>
   <div class="card"><div class="tabs" id="aTabs">${[['consulta','🔎 Consulta producto / línea'],['productos','Producto por producto'],['lineas','Por línea'],['empresas','Por empresa'],['rotacion','Rotación y stock'],['abc','Análisis ABC'],['cajeros','Por cajero'],['clientes','Clientes'],['canasta','Canasta (se venden juntos)'],['sinmov','Sin movimiento']].map(([k,t])=>`<button data-t="${k}" class="${k===anTab?'on':''}">${t}</button>`).join('')}</div>
   <div class="row" id="aBar" style="justify-content:flex-end;margin-bottom:8px"><input id="aF" placeholder="🔎 Filtrar esta tabla (producto, línea, empresa…)" style="max-width:360px"><button class="btn sm" id="aX" style="flex:0">Exportar esta tabla (CSV)</button></div><div id="aT"></div></div>`;
-  const run=()=>{charts.forEach(c=>c.destroy());charts=[];anData=analizar({desde:$('#aD').value,hasta:$('#aH').value,empresa:$('#aE').value,linea:$('#aL').value,cajero:$('#aC').value});drawKpis();drawCharts();drawTab()};
-  ['aD','aH','aE','aL','aC'].forEach(id=>$('#'+id).onchange=run);
+  const run=()=>{charts.forEach(c=>c.destroy());charts=[];anData=analizar({desde:$('#aD').value,hasta:$('#aH').value,empresa:$('#aE').value,linea:$('#aL').value,producto:$('#aP').value,cajero:$('#aC').value});drawKpis();drawCharts();drawTab()};
+  const fillL=()=>{const e=$('#aE').value,cur=$('#aL').value;const ls=[...new Set(prods().filter(p=>!e||p.empresa===e).map(p=>p.linea).filter(Boolean))].sort();
+    $('#aL').innerHTML=`<option value="">${e?'Todas las de '+esc(e):'Todas las líneas'}</option>`+ls.map(l=>`<option ${l===cur?'selected':''}>${esc(l)}</option>`).join('')};
+  const fillP=()=>{const e=$('#aE').value,l=$('#aL').value,cur=$('#aP').value;const ps=prods().filter(p=>(!e||p.empresa===e)&&(!l||p.linea===l)).sort((a,b)=>a.nombre.localeCompare(b.nombre));
+    $('#aP').innerHTML=`<option value="">Todos los productos (${ps.length})</option>`+ps.map(p=>`<option value="${p.id}" ${p.id===cur?'selected':''}>${esc(p.nombre)}</option>`).join('')};
+  fillL();fillP();
+  $('#aE').onchange=()=>{$('#aL').value='';fillL();$('#aP').value='';fillP();run()};
+  $('#aL').onchange=()=>{$('#aP').value='';fillP();run()};
+  ['aD','aH','aP','aC'].forEach(id=>$('#'+id).onchange=run);
   $$('[data-pr]').forEach(b=>b.onclick=()=>{const v=b.dataset.pr;$('#aH').value=hoy;$('#aD').value=v==='mes'?hoy.slice(0,8)+'01':addDays(hoy,-v);run()});
   $$('#aTabs button').forEach(b=>b.onclick=()=>{anTab=b.dataset.t;$$('#aTabs button').forEach(x=>x.classList.toggle('on',x===b));drawTab()});
   $('#aF').oninput=()=>drawTab();
@@ -1027,7 +1106,7 @@ function renderAnalisis(){
 function analizar(f){
   const dias=Math.max(1,daysBetween(f.desde,f.hasta));
   const ventas=DB.all('ventas').filter(v=>v.estado!=='anulada'&&(!f.cajero||v.usuario===f.cajero)&&ymd(v.fecha)>=f.desde&&ymd(v.fecha)<=f.hasta);
-  const itemOk=it=>(!f.empresa||it.empresa===f.empresa)&&(!f.linea||it.linea===f.linea);
+  const itemOk=it=>(!f.empresa||it.empresa===f.empresa)&&(!f.linea||it.linea===f.linea)&&(!f.producto||it.pid===f.producto);
   const P={},dia={},hora=Array(24).fill(0),horaN=Array(24).fill(0),dow=Array(7).fill(0),medios={},cajeros={},clientes={},pares={};
   let total=0,costo=0,unid=0,tickets=0,lineasTot=0;
   for(let d=f.desde;d<=f.hasta;d=addDays(d,1))dia[d]=0;
@@ -1066,7 +1145,7 @@ function drawCharts(){const a=anData;const box=$('#aCh');
   const t10=a.prodsArr.slice(0,10);mk('c5',{type:'bar',data:{labels:t10.map(p=>p.nombre.slice(0,24)),datasets:[{data:t10.map(p=>p.t),backgroundColor:PAL[2],borderRadius:4}]},options:{...mOpt,indexAxis:'y',scales:{x:mOpt.scales.y}}});
   const dn=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];mk('c6',{type:'bar',data:{labels:dn,datasets:[{data:a.dow,backgroundColor:PAL[0],borderRadius:4}]},options:mOpt})}
 /* --- Consulta consolidada de producto o grupo (línea / empresa / marca) --- */
-let consSel=null,consChart=null;
+let consSel=null,consChart=null,consFK='';
 const GRP={empresa:'Empresa',linea:'Línea',marca:'Marca'};
 const grpVals=t=>t==='linea'?lineas():(t==='empresa'?empresas():marcas());
 const estadoPill=(u,di)=>u<=0?'<span class="pill err">Sin movimiento</span>':(di<3?'<span class="pill err">Agotándose</span>':(di>60?'<span class="pill warn">Sobre-stock</span>':'<span class="pill ok">Normal</span>'));
@@ -1079,8 +1158,8 @@ function consolidar(pids){const f=anData.f,dias=anData.dias,set=new Set(pids),P=
   const rows=pids.map(id=>{const p=DB.get('productos',id),x=P[id],st=stockTotal(p),vpd=x.u/dias;return{p,...x,st,vpd,di:vpd>0?st/vpd:Infinity,rot:st>0?x.u/st:0,mg:x.t?(x.t-x.c)/x.t:0}}).sort((a,b)=>b.t-a.t);
   return{rows,dia,tickets}}
 function drawConsulta(){const f=anData.f;
-  if(f.empresa&&(!consSel||(consSel.tipo==='empresa'&&consSel.id!==f.empresa)))consSel={tipo:'empresa',id:f.empresa};else if(f.linea&&(!consSel||(consSel.tipo==='linea'&&consSel.id!==f.linea)))consSel={tipo:'linea',id:f.linea};
-  const g=consSel&&consSel.tipo!=='producto'?consSel.tipo:'empresa';
+  const fk=[f.empresa,f.linea,f.producto].join('|');if(fk!==consFK){consFK=fk;consSel=f.producto?{tipo:'producto',id:f.producto}:(f.empresa||f.linea?{tipo:'filtro'}:null)}
+  const g=consSel&&GRP[consSel.tipo]?consSel.tipo:'empresa';
   $('#aT').innerHTML=`<div class="grid3"><label>Buscar producto (nombre, código o palabra clave)<input id="cnQ" placeholder="ej.: aguila lai · boston · 7702…" autocomplete="off"></label>
     <label>Consolidar por<select id="cnG">${Object.entries(GRP).map(([k,v])=>`<option value="${k}" ${k===g?'selected':''}>${v}</option>`).join('')}</select></label><label id="cnVL">Seleccione<select id="cnV"></select></label></div>
     ${f.empresa||f.linea?`<small class="mut">La búsqueda solo muestra productos de ${[f.empresa,f.linea].filter(Boolean).map(esc).join(' / ')} (filtro de arriba).</small>`:''}
@@ -1112,17 +1191,17 @@ function drawConsultaOut(){const out=$('#cnOut');if(!out)return;if(consChart){co
       <div class="card" style="height:260px;display:flex;flex-direction:column"><h4 style="margin:0 0 6px">Ventas por día</h4><canvas id="cnC"></canvas></div></div>`;
     $('#cnK').onclick=()=>kardexModal(p);$('#cnInv')&&($('#cnInv').onclick=()=>inventariarProducto(p.id));
     $('#cnEmp')&&($('#cnEmp').onclick=()=>{consSel={tipo:'empresa',id:p.empresa};drawConsulta()});drawConsChart(dia);return}
-  const G=consSel.tipo,V=consSel.id;const pids=DB.all('productos').filter(p=>p.activo!==false&&(p[G]||'—')===V).map(p=>p.id);const {rows,dia,tickets}=consolidar(pids);
+  const G=consSel.tipo,isF=G==='filtro',V=isF?[a.f.empresa,a.f.linea].filter(Boolean).join(' · '):consSel.id;const pids=DB.all('productos').filter(p=>p.activo!==false&&(isF?((!a.f.empresa||p.empresa===a.f.empresa)&&(!a.f.linea||p.linea===a.f.linea)):(p[G]||'—')===V)).map(p=>p.id);const {rows,dia,tickets}=consolidar(pids);
   const t=rows.reduce((s,r)=>s+r.t,0),c=rows.reduce((s,r)=>s+r.c,0),u=rows.reduce((s,r)=>s+r.u,0),inv=rows.reduce((s,r)=>s+Math.max(0,r.st)*(+r.p.costo||0),0),cvd=c/a.dias;
-  out.innerHTML=`<div class="page-head" style="margin-bottom:8px"><div><h3>${GRP[G]}: ${esc(V)}</h3><span class="mut">${pids.length} productos registrados · ${a.f.desde} a ${a.f.hasta}</span></div>${can('admin_caja')?'<button class="btn sm pri" id="cnInvG">📋 Inventariar estos productos</button>':''}</div>
+  out.innerHTML=`<div class="page-head" style="margin-bottom:8px"><div><h3>${isF?(a.f.empresa?'Empresa':'Línea'):GRP[G]}: ${esc(V)}</h3><span class="mut">${pids.length} productos registrados · ${a.f.desde} a ${a.f.hasta}</span></div>${can('admin_caja')?'<button class="btn sm pri" id="cnInvG">📋 Inventariar estos productos</button>':''}</div>
    <div class="kpis">${k('Venta',money(t),'Participación '+pct(a.total?t/a.total:0))+k('Utilidad bruta',money(t-c),'Margen '+pct(t?(t-c)/t:0))+k('Unidades vendidas',num(u,2),tickets+' tickets')
     +k('Inventario a costo',money(inv),'')+k('Días de inventario',cvd?num(inv/cvd,1)+' días':'∞','inventario / costo vendido diario')+k('Rotación del período',inv?num(c/inv,2)+' veces':'—','costo vendido / inventario')
     +k('Sin movimiento',rows.filter(r=>r.u<=0).length+' ref.','')+k('Agotándose (< 3 días)',rows.filter(r=>r.u>0&&r.di<3).length+' ref.','')}</div>
    <div class="card" style="height:240px;display:flex;flex-direction:column;margin-bottom:10px"><h4 style="margin:0 0 6px">Ventas por día</h4><canvas id="cnC"></canvas></div>
-   <div class="tbl-wrap"><table class="t"><thead><tr><th>Producto</th><th>${G==='empresa'?'Línea':'Empresa'}</th><th class="r">Unidades</th><th class="r">Venta</th><th class="r">Margen</th><th class="r">% del grupo</th><th class="r">Prom/día</th><th class="r">Stock</th><th class="r">Días inv.</th><th class="r">Rotación</th><th>Estado</th></tr></thead><tbody>
-   ${rows.map(r=>`<tr data-id="${r.p.id}" style="cursor:pointer"><td class="b">${esc(r.p.nombre)}</td><td>${esc(G==='empresa'?r.p.linea:r.p.empresa)}</td><td class="r">${num(r.u,2)}</td><td class="r">${money(r.t)}</td><td class="r">${pct(r.mg)}</td><td class="r">${pct(t?r.t/t:0)}</td><td class="r">${num(r.vpd,1)}</td><td class="r">${num(r.st,2)}</td><td class="r">${isFinite(r.di)?num(r.di,1):'∞'}</td><td class="r">${num(r.rot,2)}</td><td>${estadoPill(r.u,r.di)}</td></tr>`).join('')}</tbody></table></div><small class="mut">Clic en un producto para ver su ficha y hacerle inventario.</small>`;
+   <div class="tbl-wrap"><table class="t"><thead><tr><th>Producto</th><th>${G==='empresa'||(isF&&a.f.empresa)?'Línea':'Empresa'}</th><th class="r">Unidades</th><th class="r">Venta</th><th class="r">Margen</th><th class="r">% del grupo</th><th class="r">Prom/día</th><th class="r">Stock</th><th class="r">Días inv.</th><th class="r">Rotación</th><th>Estado</th></tr></thead><tbody>
+   ${rows.map(r=>`<tr data-id="${r.p.id}" style="cursor:pointer"><td class="b">${esc(r.p.nombre)}</td><td>${esc(G==='empresa'||(isF&&a.f.empresa)?r.p.linea:r.p.empresa)}</td><td class="r">${num(r.u,2)}</td><td class="r">${money(r.t)}</td><td class="r">${pct(r.mg)}</td><td class="r">${pct(t?r.t/t:0)}</td><td class="r">${num(r.vpd,1)}</td><td class="r">${num(r.st,2)}</td><td class="r">${isFinite(r.di)?num(r.di,1):'∞'}</td><td class="r">${num(r.rot,2)}</td><td>${estadoPill(r.u,r.di)}</td></tr>`).join('')}</tbody></table></div><small class="mut">Clic en un producto para ver su ficha y hacerle inventario.</small>`;
   $$('tr[data-id]',out).forEach(tr=>tr.onclick=()=>{consSel={tipo:'producto',id:tr.dataset.id};drawConsultaOut()});
-  $('#cnInvG')&&($('#cnInvG').onclick=()=>{const tt=createToma(G==='linea'?'linea':G,V,pids,'ambas');tomaAbierta=tt.id;toast('Toma #'+tt.numero+' creada');location.hash='#/conteos'});
+  $('#cnInvG')&&($('#cnInvG').onclick=()=>{const tt=isF?createToma('producto','',pids,'ambas',V):createToma(G==='linea'?'linea':G,V,pids,'ambas');tomaAbierta=tt.id;toast('Toma #'+tt.numero+' creada');location.hash='#/conteos'});
   drawConsChart(dia)}
 function drawConsChart(dia){const cv=$('#cnC');if(!cv||!window.Chart)return;const dl=Object.keys(dia).sort();
   consChart=new Chart(cv,{type:'bar',data:{labels:dl.map(d=>d.slice(5)),datasets:[{data:dl.map(d=>dia[d]),backgroundColor:PAL[0],borderRadius:3}]},
@@ -1135,13 +1214,13 @@ function tabTable(){const a=anData;const m=v=>({v:Math.round(v),h:money(v)}),p=v
     case'productos':return{h:[['Código'],['Producto'],['Línea'],['Empresa'],['Unidades',1],['Venta',1],['Costo',1],['Utilidad',1],['Margen',1],['% Part.',1],['Stock',1]],rows:a.prodsArr.map(x=>[x.codigo,x.nombre,x.linea,x.empresa,n(x.u),m(x.t),m(x.c),m(x.t-x.c),p(x.t?(x.t-x.c)/x.t:0),p(x.part),n(stockOf(x.pid))])};
     case'lineas':return{h:[['Línea'],['Referencias',1],['Unidades',1],['Venta',1],['Costo',1],['Utilidad',1],['Margen',1],['% Part.',1]],rows:grp('linea').map(g=>[g.k,n(g.refs),n(g.u),m(g.t),m(g.c),m(g.t-g.c),p(g.t?(g.t-g.c)/g.t:0),p(a.total?g.t/a.total:0)])};
     case'empresas':return{h:[['Empresa'],['Referencias',1],['Unidades',1],['Venta',1],['Costo',1],['Utilidad',1],['Margen',1],['% Part.',1],['Inv. a costo',1]],rows:grp('empresa').map(g=>[g.k,n(g.refs),n(g.u),m(g.t),m(g.c),m(g.t-g.c),p(g.t?(g.t-g.c)/g.t:0),p(a.total?g.t/a.total:0),m(DB.all('productos').filter(x=>(x.empresa||'—')===g.k).reduce((s,x)=>s+Math.max(0,stockTotal(x))*(+x.costo||0),0))])};
-    case'rotacion':return{h:[['Producto'],['Empresa'],['Vendido',1],['Prom/día',1],['Stock',1],['Días de inventario',1],['Rotación período',1],['Estado']],rows:DB.all('productos').filter(x=>x.activo!==false&&(!a.f.empresa||x.empresa===a.f.empresa)&&(!a.f.linea||x.linea===a.f.linea)).map(x=>{const s=a.P[x.id]||{u:0};const vpd=s.u/a.dias,st=stockTotal(x),di=vpd>0?st/vpd:Infinity;
+    case'rotacion':return{h:[['Producto'],['Empresa'],['Vendido',1],['Prom/día',1],['Stock',1],['Días de inventario',1],['Rotación período',1],['Estado']],rows:DB.all('productos').filter(x=>x.activo!==false&&(!a.f.empresa||x.empresa===a.f.empresa)&&(!a.f.linea||x.linea===a.f.linea)&&(!a.f.producto||x.id===a.f.producto)).map(x=>{const s=a.P[x.id]||{u:0};const vpd=s.u/a.dias,st=stockTotal(x),di=vpd>0?st/vpd:Infinity;
       return[x.nombre,x.empresa,n(s.u),n(vpd,1),n(st),{v:isFinite(di)?di.toFixed(1):'',h:isFinite(di)?num(di,1):'∞'},n(st>0?s.u/st:0,2),di<3?'<span class="pill err">Agotándose</span>':(di>60?'<span class="pill warn">Sobre-stock</span>':'<span class="pill ok">Normal</span>')]}).sort((x,y)=>(x[5].v===''?1e9:+x[5].v)-(y[5].v===''?1e9:+y[5].v))};
     case'abc':return{h:[['Clase'],['Producto'],['Venta',1],['% Part.',1],['% Acumulado',1]],rows:a.prodsArr.map(x=>[`<span class="pill ${x.abc==='A'?'ok':(x.abc==='B'?'warn':'err')}">${x.abc}</span>`,x.nombre,m(x.t),p(x.part),p(x.cum)])};
     case'cajeros':return{h:[['Cajero'],['Transacciones',1],['Venta',1],['Ticket prom.',1],['% Part.',1]],rows:Object.entries(a.cajeros).sort((x,y)=>y[1].t-x[1].t).map(([k,c])=>[k,n(c.n),m(c.t),m(c.n?c.t/c.n:0),p(a.total?c.t/a.total:0)])};
     case'clientes':return{h:[['Cliente'],['Compras',1],['Total',1],['Ticket prom.',1],['Última compra']],rows:Object.entries(a.clientes).sort((x,y)=>y[1].t-x[1].t).map(([k,c])=>[k,n(c.n),m(c.t),m(c.t/c.n),fdt(c.ult)])};
     case'canasta':return{h:[['Producto A'],['Producto B'],['Veces juntos',1],['% de tickets',1]],rows:Object.entries(a.pares).sort((x,y)=>y[1]-x[1]).slice(0,40).map(([k,c])=>{const[x,y]=k.split('|');const px=DB.get('productos',x),py=DB.get('productos',y);return[px?px.nombre:'?',py?py.nombre:'?',n(c),p(a.tickets?c/a.tickets:0)]})};
-    case'sinmov':return{h:[['Código'],['Producto'],['Empresa'],['Stock',1],['Inv. a costo',1]],rows:DB.all('productos').filter(x=>x.activo!==false&&!a.P[x.id]&&stockTotal(x)>0&&(!a.f.empresa||x.empresa===a.f.empresa)&&(!a.f.linea||x.linea===a.f.linea)).map(x=>[x.codigo,x.nombre,x.empresa,n(stockTotal(x)),m(stockTotal(x)*x.costo)])};
+    case'sinmov':return{h:[['Código'],['Producto'],['Empresa'],['Stock',1],['Inv. a costo',1]],rows:DB.all('productos').filter(x=>x.activo!==false&&!a.P[x.id]&&stockTotal(x)>0&&(!a.f.empresa||x.empresa===a.f.empresa)&&(!a.f.linea||x.linea===a.f.linea)&&(!a.f.producto||x.id===a.f.producto)).map(x=>[x.codigo,x.nombre,x.empresa,n(stockTotal(x)),m(stockTotal(x)*x.costo)])};
   }}
 function filteredRows(t){const w=norm(($('#aF')||{}).value||'').split(/\s+/).filter(Boolean);if(!w.length)return t.rows;
   return t.rows.filter(r=>{const s=norm(r.map(c=>typeof c==='object'&&c!==null?c.h:String(c).replace(/<[^>]+>/g,'')).join(' '));return w.every(x=>s.includes(x))})}
