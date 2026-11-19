@@ -196,7 +196,7 @@ const nkg=v=>Math.round((+String(v??'').replace(/\s|kg/gi,'').replace(',','.')||
 function downloadJSON(name,obj){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(obj)],{type:'application/json'}));a.download=name;a.click()}
 
 // ---------- Almacenamiento (local + Supabase) ----------
-const COLLS=['config','usuarios','productos','clientes','ventas','devoluciones','cajas','movimientos','recepciones','espera','conteos','conteoItems'];
+const COLLS=['config','usuarios','productos','clientes','ventas','devoluciones','cajas','movimientos','recepciones','espera','conteos','conteoItems','averias','bajas','sugeridos'];
 const DB={
   d:{},sb:null,
   loadLocal(){try{this.d=JSON.parse(localStorage.getItem('minipos_v1'))||{}}catch(e){this.d={}}COLLS.forEach(c=>this.d[c]=this.d[c]||{})},
@@ -327,7 +327,14 @@ function seed(){
   let rn=1;empresasDemo(prods).forEach(e=>{const f=new Date();f.setDate(f.getDate()-(18+Math.floor(Math.random()*18)));f.setHours(9,0,0,0);
     const items=prods.filter(p=>p.empresa===e).map(p=>{const und=Math.max(1,Math.round((vend[p.id]||3)/30*20*(.6+Math.random()*.8)));return{pid:p.id,nombre:p.nombre,pres:p.unidad||'Unidad',cant:und,und,costo:p.costo,subtotal:und*p.costo}});
     DB.put('recepciones',{numero:rn++,fecha:f.toISOString(),empresa:e,factura:'FV-'+(1000+rn),ubic:'bodega',usuario:'Demo',items,total:items.reduce((a,i)=>a+i.subtotal,0)})});
-  saveCfg({consecutivo:n,recConsecutivo:rn});
+  const pb=nm=>prods.find(p=>p.nombre.startsWith(nm));
+  [['Cigarrillo Boston',[-12,-8,-15]],['Cigarrillo Marlboro',[-6,-9]],['Cerveza Águila lata',[-4,3,-6,-5]],['Chocolatina Jet',[-10,-7,-12]],['Arroz Diana',[2,-1]]].forEach(([nm,difs])=>{const p=pb(nm);if(!p)return;
+    difs.forEach((d,i)=>{const f=new Date();f.setDate(f.getDate()-((difs.length-i)*30-3));DB.put('movimientos',{fecha:f.toISOString(),pid:p.id,cant:d,tipo:'inventario',ubic:'sala',ref:'Toma mensual (demo) '+(i+1),nota:'Conteo físico',usuario:'Laura Supervisor',autorizo:'Administrador'})})});
+  let an=1;[['Coca-Cola 400',3,'Empaque roto'],['Cerveza Póker',4,'Golpeado / abollado'],['Leche Colanta',2,'Vencido']].forEach(([nm,c,mo])=>{const p=pb(nm);if(!p)return;p.stockAveria=c;DB.put('productos',p);const f=new Date();f.setDate(f.getDate()-5-an);
+    DB.put('averias',{numero:an++,fecha:f.toISOString(),pid:p.id,nombre:p.nombre,codigo:p.codigo,empresa:p.empresa,linea:p.linea,cant:c,ubic:'sala',motivo:mo,obs:'',costo:p.costo,estado:'pendiente',usuario:'Andrés Cajero'})});
+  let bn=1;[['Galletas Festival',4,'Autoconsumo','Refrigerio empleados'],['Café Sello Rojo',1,'Consumo interno','Café para la tienda'],['Bon Bon Bum',12,'Obsequio / degustación','Para niños clientes']].forEach(([nm,c,t,no])=>{const p=pb(nm);if(!p)return;const f=new Date();f.setDate(f.getDate()-bn*3);
+    DB.put('bajas',{numero:bn++,fecha:f.toISOString(),pid:p.id,nombre:p.nombre,codigo:p.codigo,linea:p.linea,empresa:p.empresa,cant:c,ubic:'sala',tipo:t,nota:no,costo:p.costo,valor:c*p.costo,usuario:'Laura Supervisor',autorizo:'Administrador'})});
+  saveCfg({consecutivo:n,recConsecutivo:rn,averiaConsecutivo:an,bajaConsecutivo:bn});
 }
 
 // ---------- Modales ----------
@@ -464,6 +471,7 @@ const ROUTES={
   ventas:{t:'Ventas',min:'cajero',r:()=>renderVentas()},
   inventario:{t:'Inventario',min:'admin_caja',r:()=>renderInventario()},
   conteos:{t:'Toma de inventario',min:'admin_caja',r:()=>renderConteos()},
+  novedades:{t:'Averías y bajas',min:'admin_caja',r:()=>renderNovedades()},
   recepcion:{t:'Recibos / Bodega',min:'admin_caja',r:()=>renderRecepcion()},
   traslados:{t:'Traslados y menudeo',min:'admin_caja',r:()=>renderTraslados()},
   sugeridos:{t:'Sugeridos',min:'admin_caja',r:()=>renderSugeridos()},
@@ -471,13 +479,13 @@ const ROUTES={
   clientes:{t:'Clientes',min:'cajero',r:()=>renderClientes()},
   usuarios:{t:'Usuarios',min:'admin',r:()=>renderUsuarios()},
   config:{t:'Configuración',min:'admin',r:()=>renderConfig()},
-  movil:{t:'📱 Celular',min:'cajero',r:()=>renderMovil()}
+  movil:{t:'Celular',min:'cajero',hide:1,r:()=>renderMovil()}
 };
 let ROUTE='pos',charts=[];
 function layout(){
   $('#app').innerHTML=`<header class="top"><div class="brand">Mini<span>POS</span></div><nav class="nav" id="nav"></nav>
   <div class="who"><span id="syncBadge"></span><span id="cajaBadge"></span><span class="nm">${esc(USER.nombre)} · ${ROLES[USER.rol]}</span>${USER.rol!=='cajero'?`<button class="btn mode" onclick="toggleModoCaja()" title="Muestra solo las opciones de caja">${modoCaja()?'⚙ Administración':'🧾 Modo caja'}</button>`:''}<button class="btn" onclick="logout()">Salir</button></div></header><main id="view"></main>`;
-  $('#nav').innerHTML=Object.entries(ROUTES).filter(([k,r])=>can(r.min)&&(!modoCaja()||r.caja)).map(([k,r])=>`<a href="#/${k}" data-r="${k}">${r.t}</a>`).join('');
+  $('#nav').innerHTML=Object.entries(ROUTES).filter(([k,r])=>can(r.min)&&!r.hide&&(!modoCaja()||r.caja)).map(([k,r])=>`<a href="#/${k}" data-r="${k}">${r.t}</a>`).join('');
   updateBadges()}
 function go(){
   if(!USER)return renderLogin();
@@ -999,24 +1007,24 @@ function ventasPorProducto(desde,hasta){const m={};
   DB.all('devoluciones').forEach(d=>{const f=ymd(d.fecha);if(f<desde||f>hasta)return;d.items.forEach(it=>{m[it.pid]=(m[it.pid]||0)-it.cant*it.factor})});return m}
 function renderSugeridos(){
   const S=sugState;
-  $('#view').innerHTML=`<div class="page-head"><h2>Sugerido de pedido por proveedor</h2><div class="row" style="flex:0;flex-wrap:nowrap"><button class="btn" id="sgT">🧾 Imprimir tirilla</button><button class="btn" id="sgP">🖨️ Imprimir pedido (hoja)</button><button class="btn" id="sgX">Exportar CSV</button></div></div>
+  $('#view').innerHTML=`<div class="page-head"><h2>Sugerido de pedido por proveedor</h2><div class="row" style="flex:0;flex-wrap:nowrap"><button class="btn" id="sgG">💾 Guardar sugerido</button><button class="btn" id="sgT">🧾 Imprimir tirilla</button><button class="btn" id="sgP">🖨️ Imprimir pedido (hoja)</button><button class="btn" id="sgX">Exportar CSV</button></div></div>
   <div class="toolbar"><label style="min-width:220px">1. Empresa / proveedor<select id="sgE"><option value="">— Seleccione la empresa —</option>${empresas().map(e=>`<option ${e===S.empresa?'selected':''}>${esc(e)}</option>`).join('')}</select></label>
    <label>2. Línea<select id="sgL"></select></label><label style="min-width:220px">3. Producto<select id="sgPr"></select></label>
    <label>Mostrar<select id="sgM">${[['todos','Todos los productos'],['agot','Agotados y por agotarse'],['pedir','Solo con sugerido']].map(([k,v])=>`<option value="${k}" ${k===S.mostrar?'selected':''}>${v}</option>`).join('')}</select></label>
    <label style="max-width:120px">Historia (días)<input id="sgH" type="number" value="${S.hist}"></label></div>
-  <div id="sgProv"></div><div id="sgOut"></div>`;
+  <div id="sgProv"></div><div id="sgAv"></div><div id="sgOut"></div><div id="sgHist"></div>`;
   const fillL=()=>{const e=$('#sgE').value;const ls=[...new Set(prods().filter(p=>p.empresa===e).map(p=>p.linea).filter(Boolean))].sort();
     if(!ls.includes(S.linea))S.linea='';$('#sgL').innerHTML=`<option value="">${e?'Todas las líneas de '+esc(e):'—'}</option>`+ls.map(l=>`<option ${l===S.linea?'selected':''}>${esc(l)}</option>`).join('');$('#sgL').disabled=!e};
   const fillP=()=>{const e=$('#sgE').value,l=$('#sgL').value;const ps=prods().filter(p=>p.empresa===e&&(!l||p.linea===l)).sort((a,b)=>a.nombre.localeCompare(b.nombre));
     if(!ps.some(p=>p.id===S.producto))S.producto='';$('#sgPr').innerHTML=`<option value="">${e?'Todos ('+ps.length+')':'—'}</option>`+ps.map(p=>`<option value="${p.id}" ${p.id===S.producto?'selected':''}>${esc(p.nombre)}</option>`).join('');$('#sgPr').disabled=!e};
   fillL();fillP();
-  $('#sgE').onchange=()=>{S.empresa=$('#sgE').value;S.linea='';S.producto='';S.pedir={};fillL();fillP();run()};
+  $('#sgE').onchange=()=>{S.empresa=$('#sgE').value;S.linea='';S.producto='';S.pedir={};S.savedId=null;fillL();fillP();run()};
   $('#sgL').onchange=()=>{S.linea=$('#sgL').value;S.producto='';fillP();run()};
   $('#sgPr').onchange=()=>{S.producto=$('#sgPr').value;run()};
   $('#sgM').onchange=()=>{S.mostrar=$('#sgM').value;run()};$('#sgH').onchange=()=>{S.hist=Math.max(7,+$('#sgH').value||30);run()};
   let rows=[];
   const run=()=>{const out=$('#sgOut'),pv=$('#sgProv');
-    if(!S.empresa){pv.innerHTML='';out.innerHTML='<div class="empty"><div style="font-size:38px">🏭</div>Seleccione primero la <b>empresa / proveedor</b> para calcular el pedido sugerido.</div>';rows=[];return}
+    if(!S.empresa){pv.innerHTML='';$('#sgAv').innerHTML='';$('#sgHist').innerHTML='';out.innerHTML='<div class="empty"><div style="font-size:38px">🏭</div>Seleccione primero la <b>empresa / proveedor</b> para calcular el pedido sugerido.</div>';rows=[];return}
     const prov=provCfg(S.empresa);
     pv.innerHTML=`<div class="card section"><div class="row" style="align-items:end"><div style="flex:2"><b>${esc(S.empresa)}</b><br><small class="mut">Ciclo del proveedor: cada cuánto le hace pedido / cada cuánto le entrega. El sugerido debe cubrir hasta la siguiente entrega.</small></div>
       <label>Entrega cada (días)<input id="pvC" type="number" value="${prov.ciclo}"></label><label>Tarda en llegar (días)<input id="pvE" type="number" value="${prov.entrega}"></label>
@@ -1034,20 +1042,29 @@ function renderSugeridos(){
        <td class="r">${isFinite(r.di)?num(r.di,1):'∞'}</td><td>${ESTADOS[r.estado]}</td><td><small>${r.ult?fdt(r.ult.fecha).slice(0,10)+'<br>'+num(r.ult.und)+' und'+(r.dur!=null?' · duró '+r.dur+' d':''):'—'}</small></td>
        <td style="max-width:360px">${REC[r.rec]} <small>${r.nota}</small></td><td class="r b">${num(r.sug)}</td><td><input data-q="${r.p.id}" inputmode="numeric" value="${pedirDe(r)}"></td><td><small>${esc(presTxt(r.p,pedirDe(r)))}</small></td><td class="r">${money(pedirDe(r)*(+r.p.costo||0))}</td></tr>`).join('')||'<tr><td colspan="12" class="empty">Nada para mostrar con este filtro</td></tr>'}</tbody></table></div>
      <p class="mut"><b>Cómo se calcula:</b> venta promedio diaria de los últimos ${S.hist} días × (${prov.ciclo} días de ciclo + ${prov.entrega} de entrega) + stock de seguridad (variabilidad de la venta al ${({1.28:'90',1.65:'95',2.05:'98'})[prov.z]||95}%) − stock actual. Esa necesidad se compara con tu último pedido (y cuántos días te duró): si necesitas más de un 10 % por encima, se recomienda <b>subir</b>; si es más de un 10 % por debajo (rotó lento), <b>bajar</b>. Puede corregir la columna «Pedir» antes de imprimir.</p>`;
-    $$('[data-q]',out).forEach(i=>i.onchange=()=>{S.pedir[i.dataset.q]=Math.max(0,nkg(i.value));run()})};
+    $$('[data-q]',out).forEach(i=>i.onchange=()=>{S.pedir[i.dataset.q]=Math.max(0,nkg(i.value));run()});
+    const avp=averiasPend(S.empresa);
+    $('#sgAv').innerHTML=avp.length?`<div class="card section" style="border:2px solid var(--warn);background:#fffaf0"><b>⚠️ Recuerde: ${avp.length} averías pendientes con ${esc(S.empresa)} (${money(avp.reduce((a,x)=>a+x.cant*x.costo,0))} a costo)</b> — pida el cambio con este pedido o dé de baja.
+      <table class="t" style="margin-top:8px;background:transparent"><tbody>${avp.map(a=>`<tr><td>#${a.numero}</td><td>${fdt(a.fecha).slice(0,10)}</td><td class="b">${esc(a.nombre)}</td><td class="r">${num(a.cant)} und</td><td>${esc(a.motivo)}</td><td class="r">${money(a.cant*a.costo)}</td><td style="white-space:nowrap"><button class="btn sm" data-avc="${a.id}">🔄 Cambiado</button> <button class="btn sm dan" data-avb="${a.id}">Dar de baja</button></td></tr>`).join('')}</tbody></table>
+      <small class="mut">Las averías pendientes se imprimen al final del pedido para que el proveedor las cambie.</small></div>`:'';
+    $$('[data-avc]').forEach(b=>b.onclick=()=>resolverAveria(DB.get('averias',b.dataset.avc),'cambio',run));
+    $$('[data-avb]').forEach(b=>b.onclick=()=>resolverAveria(DB.get('averias',b.dataset.avb),'baja',run));
+    const hist=DB.all('sugeridos').filter(x=>x.empresa===S.empresa).sort((a,b)=>b.numero-a.numero);
+    $('#sgHist').innerHTML=`<div class="card" style="margin-top:14px"><h3>📚 Historial de sugeridos · ${esc(S.empresa)}</h3><div class="tbl-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>#</th><th>Fecha</th><th>Línea</th><th class="r">Referencias</th><th class="r">Unidades</th><th class="r">Valor</th><th>Elaboró</th><th></th></tr></thead><tbody>
+      ${hist.map(h=>`<tr><td>${h.numero}</td><td>${fdt(h.fecha)}</td><td>${esc(h.linea||'Todas')}</td><td class="r">${h.items.length}</td><td class="r">${num(h.items.reduce((a,i)=>a+i.und,0))}</td><td class="r b">${money(h.total)}</td><td>${esc(h.usuario)}</td><td style="white-space:nowrap"><button class="btn sm" data-hv="${h.id}">Ver</button> <button class="btn sm" data-hp="${h.id}">Imprimir</button></td></tr>`).join('')||'<tr><td colspan="8" class="mut">Aún no hay sugeridos guardados para esta empresa. Se guardan con «💾 Guardar sugerido» o al imprimir.</td></tr>'}</tbody></table></div></div>`;
+    $$('[data-hp]').forEach(b=>b.onclick=()=>printSheet(pedidoSheetHTML(DB.get('sugeridos',b.dataset.hp))));
+    $$('[data-hv]').forEach(b=>b.onclick=()=>{const h=DB.get('sugeridos',b.dataset.hv);Modal.open({wide:true,title:`Sugerido #${h.numero} · ${esc(h.empresa)} · ${fdt(h.fecha)}`,body:`<div class="tbl-wrap"><table class="t"><thead><tr><th>Producto</th><th>Línea</th><th class="r">Stock entonces</th><th>Pedido</th><th class="r">Und</th><th class="r">Costo</th></tr></thead><tbody>${h.items.map(i=>`<tr><td class="b">${esc(i.nombre)}</td><td>${esc(i.linea)}</td><td class="r">${num(i.stock,2)}</td><td>${esc(i.pres)}</td><td class="r">${num(i.und)}</td><td class="r">${money(i.und*i.costo)}</td></tr>`).join('')}</tbody></table></div><div class="b" style="text-align:right">Total ${money(h.total)}</div>${(h.averias||[]).length?'<div class="hint">Incluía '+h.averias.length+' averías para cambio.</div>':''}`})})};
+  const buildRec=()=>({fecha:new Date().toISOString(),empresa:S.empresa,linea:S.linea,usuario:USER.nombre,items:rows.filter(r=>pedirDe(r)>0).map(r=>({pid:r.p.id,codigo:r.p.codigo,nombre:r.p.nombre,linea:r.p.linea,stock:r.st,und:pedirDe(r),pres:presTxt(r.p,pedirDe(r)),costo:+r.p.costo||0,estado:r.estado,rec:r.rec})),averias:averiasPend(S.empresa).map(a=>({numero:a.numero,fecha:a.fecha,nombre:a.nombre,cant:a.cant,motivo:a.motivo}))});
+  const guardar=()=>{if(!S.empresa){toast('Seleccione la empresa','warn');return null}const rec=buildRec();if(!rec.items.length){toast('No hay productos para pedir','warn');return null}rec.total=rec.items.reduce((a,i)=>a+i.und*i.costo,0);
+    const o0=S.savedId&&DB.get('sugeridos',S.savedId);if(o0){Object.assign(o0,rec);DB.put('sugeridos',o0);return o0}const o=DB.put('sugeridos',{...rec,numero:nextNum('sugConsecutivo')});S.savedId=o.id;return o};
+  $('#sgG').onclick=()=>{const o=guardar();if(o){toast('Sugerido #'+o.numero+' guardado en el historial');run()}};
   const lines=()=>rows.filter(r=>pedirDe(r)>0);
   $('#sgX').onclick=()=>{if(!S.empresa)return toast('Seleccione la empresa','warn');downloadCSV('sugerido_'+S.empresa,[['Codigo','Producto','Linea','Stock','VentaDia','DiasInv','Estado','UltimoPedido','DuroDias','Recomendacion','Sugerido','Pedir','Presentacion','Costo'],...rows.map(r=>[r.p.codigo,r.p.nombre,r.p.linea,r.st,r.mean.toFixed(2),isFinite(r.di)?r.di.toFixed(1):'',r.estado,r.ult?r.ult.und:'',r.dur??'',r.rec,r.sug,pedirDe(r),presTxt(r.p,pedirDe(r)),Math.round(pedirDe(r)*(+r.p.costo||0))])])};
-  $('#sgT').onclick=()=>{if(!S.empresa)return toast('Seleccione la empresa','warn');const L=lines();
-    printHTML(`<div class="c b big">${esc(cfg().negocio)}</div><div class="c b">PEDIDO SUGERIDO</div><div class="c">${esc(S.empresa)}${S.linea?' · '+esc(S.linea):''}</div><div>${fdt(new Date())}</div><hr><table>${L.map(r=>`<tr><td colspan="2">${esc(r.p.nombre)}</td></tr><tr><td>${esc(presTxt(r.p,pedirDe(r)))}</td><td class="r">${money(pedirDe(r)*(+r.p.costo||0))}</td></tr>`).join('')}</table><hr><table><tr><td class="b">Referencias</td><td class="r">${L.length}</td></tr><tr><td class="b">TOTAL EST.</td><td class="r b">${money(L.reduce((a,r)=>a+pedirDe(r)*(+r.p.costo||0),0))}</td></tr></table><div class="c">.</div>`)};
-  $('#sgP').onclick=()=>{if(!S.empresa)return toast('Seleccione la empresa','warn');const L=lines();const c=cfg();
-    printSheet(`<div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2 style="margin:0">${esc(c.negocio)}</h2><div>NIT ${esc(c.nit)} · ${esc(c.direccion)} · Tel. ${esc(c.telefono)}</div></div><div style="text-align:right"><h2 style="margin:0">PEDIDO SUGERIDO</h2><div>${fdt(new Date())}</div></div></div>
-      <p><b>Proveedor:</b> ${esc(S.empresa)}${S.linea?' &nbsp; <b>Línea:</b> '+esc(S.linea):''}</p>
-      <table class="sh"><thead><tr><th>#</th><th>Código</th><th>Producto</th><th>Línea</th><th class="r">Stock</th><th>Cantidad a pedir</th><th class="r">Unidades</th><th class="r">Costo est.</th></tr></thead><tbody>
-      ${L.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.p.codigo)}</td><td>${esc(r.p.nombre)}</td><td>${esc(r.p.linea)}</td><td class="r">${num(r.st,2)}</td><td><b>${esc(presTxt(r.p,pedirDe(r)))}</b></td><td class="r">${num(pedirDe(r))}</td><td class="r">${money(pedirDe(r)*(+r.p.costo||0))}</td></tr>`).join('')}</tbody>
-      <tfoot><tr><td colspan="6" class="r b">TOTAL ESTIMADO</td><td class="r b">${num(L.reduce((a,r)=>a+pedirDe(r),0))}</td><td class="r b">${money(L.reduce((a,r)=>a+pedirDe(r)*(+r.p.costo||0),0))}</td></tr></tfoot></table>
-      <br><br><div style="display:flex;justify-content:space-between"><div>_______________________<br>Elaboró</div><div>_______________________<br>Proveedor / vendedor</div></div>`)};
+  $('#sgT').onclick=()=>{const o=guardar();if(!o)return;run();const L=lines();const avp=averiasPend(S.empresa);
+    printHTML(`<div class="c b big">${esc(cfg().negocio)}</div><div class="c b">PEDIDO SUGERIDO</div><div class="c">${esc(S.empresa)}${S.linea?' · '+esc(S.linea):''}</div><div>${fdt(new Date())}</div><hr><table>${L.map(r=>`<tr><td colspan="2">${esc(r.p.nombre)}</td></tr><tr><td>${esc(presTxt(r.p,pedirDe(r)))}</td><td class="r">${money(pedirDe(r)*(+r.p.costo||0))}</td></tr>`).join('')}</table><hr><table><tr><td class="b">Referencias</td><td class="r">${L.length}</td></tr><tr><td class="b">TOTAL EST.</td><td class="r b">${money(L.reduce((a,r)=>a+pedirDe(r)*(+r.p.costo||0),0))}</td></tr></table>${avp.length?'<hr><div class="b">AVERÍAS PARA CAMBIO</div><table>'+avp.map(a=>`<tr><td>${esc(a.nombre)}</td><td class="r">${num(a.cant)}</td></tr>`).join('')+'</table>':''}<div class="c">.</div>`)};
+  $('#sgP').onclick=()=>{const o=guardar();if(!o)return;printSheet(pedidoSheetHTML(o));run()};
   run()}
-let sugState={empresa:'',linea:'',producto:'',mostrar:'todos',hist:30,pedir:{}};
+let sugState={empresa:'',linea:'',producto:'',mostrar:'todos',hist:30,pedir:{},savedId:null};
 const ESTADOS={agotado:'<span class="pill err">Agotado</span>',riesgo:'<span class="pill warn">Por agotarse</span>',normal:'<span class="pill ok">Normal</span>',sobre:'<span class="pill">Sobre-stock</span>',sinventa:'<span class="pill">Sin ventas</span>'};
 const REC={subir:'<span class="pill err">⬆ Subir</span>',bajar:'<span class="pill">⬇ Bajar</span>',mantener:'<span class="pill ok">= Mantener</span>',nopedir:'<span class="pill">No pedir</span>',pedir:'<span class="pill warn">Pedir</span>'};
 const pedirDe=r=>sugState.pedir[r.p.id]!=null?sugState.pedir[r.p.id]:r.sug;
@@ -1486,9 +1503,9 @@ let invTab='tomas',tomaAbierta=null,tomaFiltro='todos';
 function renderConteos(){
   const t=tomaAbierta&&DB.get('conteos',tomaAbierta);if(t)return renderToma(t);tomaAbierta=null;
   $('#view').innerHTML=`<div class="page-head"><h2>Toma de inventario</h2><div class="row" style="flex:0;flex-wrap:nowrap"><button class="btn acc" id="tQuick">📷 Inventario rápido (escanear)</button><button class="btn pri" id="tNew">+ Nueva toma</button></div></div>
-    <div class="tabs" id="tTabs">${[['tomas','📋 Tomas de inventario'],['pend','⏰ Productos no inventariados']].map(([k,x])=>`<button data-t="${k}" class="${k===invTab?'on':''}">${x}</button>`).join('')}</div><div id="tBody"></div>`;
+    <div class="tabs" id="tTabs">${[['tomas','📋 Tomas de inventario'],['pend','⏰ Productos no inventariados'],['hist','📈 Historial y pérdidas']].map(([k,x])=>`<button data-t="${k}" class="${k===invTab?'on':''}">${x}</button>`).join('')}</div><div id="tBody"></div>`;
   $$('#tTabs button').forEach(b=>b.onclick=()=>{invTab=b.dataset.t;renderConteos()});
-  $('#tNew').onclick=()=>newTomaModal();$('#tQuick').onclick=()=>{const t=quickToma();tomaAbierta=t.id;renderConteos()};invTab==='tomas'?drawTomas():drawPend()}
+  $('#tNew').onclick=()=>newTomaModal();$('#tQuick').onclick=()=>{const t=quickToma();tomaAbierta=t.id;renderConteos()};invTab==='tomas'?drawTomas():(invTab==='pend'?drawPend():drawHistInv())}
 function drawTomas(){const list=DB.all('conteos').sort((a,b)=>b.numero-a.numero);
   $('#tBody').innerHTML=`<div class="tbl-wrap"><table class="t"><thead><tr><th>#</th><th>Alcance</th><th>Ubicación</th><th>Creada</th><th>Por</th><th class="r">Avance</th><th>Estado</th><th></th></tr></thead><tbody>
   ${list.map(c=>{const its=conteoItems(c.id);const n=c.pids.filter(pid=>tomaContado(its.find(i=>i.pid===pid),c)).length;
@@ -1660,6 +1677,135 @@ function mLog(){const box=$('#mLog');if(!box)return;const t=mToma();
    :DB.all('movimientos').filter(x=>x.tipo!=='venta').sort((a,b)=>a.fecha<b.fecha?1:-1).slice(0,12).map(x=>{const p=DB.get('productos',x.pid);return`<div style="display:flex;justify-content:space-between;border-bottom:1px solid #eef2f1;padding:6px 0;font-size:13px"><span>${esc(p?p.nombre:'?')}<br><small class="mut">${fhr(x.fecha)} · ${esc(x.tipo)} · ${esc(x.ubic)}</small></span><b class="${x.cant<0?'err':'ok'}">${x.cant>0?'+':''}${num(x.cant,3)}</b></div>`});
   box.innerHTML=rows.join('')||'<p class="mut">Sin movimientos</p>'}
 
+
+/* =====================================================================
+   AVERÍAS, BAJAS / CONSUMO INTERNO E INFORMES DE INVENTARIO
+   ===================================================================== */
+const TIPOS_BAJA=['Autoconsumo','Consumo interno','Obsequio / degustación','Vencido','Hurto / pérdida'];
+const MOTIVOS_AV=['Empaque roto','Vencido','Golpeado / abollado','Dañado en transporte','Defecto de fábrica','Otro'];
+const AV_EST={pendiente:'<span class="pill warn">Pendiente</span>',cambiado:'<span class="pill ok">Cambiado por proveedor</span>',baja:'<span class="pill err">Dado de baja</span>'};
+const averiasPend=emp=>DB.all('averias').filter(a=>a.estado==='pendiente'&&(!emp||a.empresa===emp)).sort((a,b)=>a.numero-b.numero);
+function prodPick(el,cb){
+  el.innerHTML=`<div class="row" style="align-items:end"><label>Producto (escanee o busque)<input class="pp-q" autocomplete="off" placeholder="Código o nombre + Enter"></label><button class="btn pp-cam" style="flex:0">📷</button></div><div class="list pp-r" style="display:none;max-height:200px"></div><div class="pp-sel"></div>`;
+  const q=$('.pp-q',el),L=$('.pp-r',el);
+  const set=p=>{L.style.display='none';q.value='';$('.pp-sel',el).innerHTML=`<div class="hint" style="margin-top:6px"><b>${esc(p.nombre)}</b> · ${esc(p.codigo)} · ${esc(p.empresa||'')}<br>Sala ${num(p.stockSala,2)} · Bodega ${num(p.stockBodega,2)}${+p.stockAveria?' · En avería '+num(p.stockAveria,2):''} · Costo ${money(p.costo)}</div>`;cb(p)};
+  q.oninput=()=>{const r=q.value.trim()?searchProducts(q.value,10):[];L.style.display=r.length?'block':'none';L.innerHTML=r.map(p=>`<div class="it" data-id="${p.id}"><span>${esc(p.nombre)} <small class="mut">${esc(p.codigo)}</small></span><small>Stock ${num(stockTotal(p),2)}</small></div>`).join('')};
+  q.onkeydown=e=>{if(e.key!=='Enter')return;e.preventDefault();const f=findByCode(q.value.trim());const r=f?[f.p]:searchProducts(q.value,2);if(r.length===1)set(r[0]);else q.oninput()};
+  L.onclick=e=>{const it=e.target.closest('[data-id]');it&&set(DB.get('productos',it.dataset.id))};
+  $('.pp-cam',el).onclick=async()=>{const c=await scanCamera('Seleccionar producto');if(!c)return;const f=findByCode(c);f?set(f.p):toast('Código '+c+' no existe','err')}}
+function registrarBaja(p,cant,ubic,tipo,nota,autorizo,mover=true){
+  if(mover)moveStock(p,-cant,ubic,'baja',tipo,nota,autorizo);
+  return DB.put('bajas',{numero:nextNum('bajaConsecutivo'),fecha:new Date().toISOString(),pid:p.id,nombre:p.nombre,codigo:p.codigo,linea:p.linea||'',empresa:p.empresa||'',cant,ubic:ubic||'',tipo,nota:nota||'',costo:+p.costo||0,valor:cant*(+p.costo||0),usuario:USER.nombre,autorizo:autorizo||''})}
+async function resolverAveria(a,accion,after){const p=DB.get('productos',a.pid);if(!p)return;
+  if(accion==='cambio'){if(!(await confirmBox(`¿El proveedor cambió ${num(a.cant)} de <b>${esc(a.nombre)}</b>? Vuelven al inventario de ${a.ubic}.`,'Sí, cambiado')))return;
+    p.stockAveria=Math.max(0,(+p.stockAveria||0)-a.cant);DB.put('productos',p);moveStock(p,a.cant,a.ubic||'sala','cambio-averia','Cambio avería #'+a.numero,'Repuesto por '+(a.empresa||'proveedor'));a.estado='cambiado'}
+  else{const au=await askAdmin(`Dar de baja avería #${a.numero}: ${num(a.cant)} × ${a.nombre} (${money(a.cant*a.costo)})`);if(!au)return;
+    p.stockAveria=Math.max(0,(+p.stockAveria||0)-a.cant);DB.put('productos',p);registrarBaja(p,a.cant,a.ubic,'Avería dada de baja','Avería #'+a.numero+' · '+a.motivo,au.nombre,false);a.estado='baja';a.autorizo=au.nombre}
+  a.resuelto=new Date().toISOString();a.resolvio=USER.nombre;DB.put('averias',a);toast('Avería #'+a.numero+' actualizada');after&&after()}
+let novTab='averias';
+function renderNovedades(){
+  $('#view').innerHTML=`<div class="page-head"><h2>Averías, bajas e informes de inventario</h2></div><div class="tabs" id="nvT">${[['averias','⚠️ Averías'],['bajas','📤 Bajas y consumo interno'],['informe','📊 Negativos y pérdidas']].map(([k,t])=>`<button data-t="${k}" class="${k===novTab?'on':''}">${t}</button>`).join('')}</div><div id="nvB"></div>`;
+  $$('#nvT button').forEach(b=>b.onclick=()=>{novTab=b.dataset.t;renderNovedades()});({averias:drawAverias,bajas:drawBajas,informe:drawInfInv})[novTab]()}
+function drawAverias(){let sel=null;const all=DB.all('averias').sort((a,b)=>b.numero-a.numero),pend=all.filter(a=>a.estado==='pendiente');
+  const porEmp={};pend.forEach(a=>{const e=porEmp[a.empresa||'Sin empresa']||(porEmp[a.empresa||'Sin empresa']={n:0,u:0,v:0});e.n++;e.u+=a.cant;e.v+=a.cant*a.costo});
+  $('#nvB').innerHTML=`<div class="grid2"><div class="card cfg-sec"><h3>Registrar avería</h3><div id="avP"></div>
+    <div class="grid3"><label>Cantidad (und)<input id="avC" inputmode="decimal"></label><label>Sale de<select id="avU"><option value="sala">Sala</option><option value="bodega">Bodega</option></select></label><label>Motivo<select id="avM">${MOTIVOS_AV.map(x=>`<option>${x}</option>`).join('')}</select></label></div>
+    <label>Observación<input id="avO" placeholder="Lote, fecha de vencimiento, detalle…"></label><div><button class="btn pri" id="avOk">Registrar avería</button></div>
+    <small class="mut">La cantidad sale del inventario vendible y queda «en avería» hasta que el proveedor la cambie o se dé de baja. El sugerido de cada empresa le recordará sus averías pendientes.</small></div>
+   <div class="card"><h3>Pendientes de cambio o baja</h3><div class="kpis" style="margin-top:8px"><div class="kpi"><small>Averías pendientes</small><div class="warn">${pend.length}</div></div><div class="kpi"><small>Valor a costo</small><div>${money(pend.reduce((a,x)=>a+x.cant*x.costo,0))}</div></div></div>
+    <table class="t"><thead><tr><th>Empresa</th><th class="r">Registros</th><th class="r">Unidades</th><th class="r">Valor</th></tr></thead><tbody>${Object.entries(porEmp).sort((a,b)=>b[1].v-a[1].v).map(([e,x])=>`<tr><td class="b">${esc(e)}</td><td class="r">${x.n}</td><td class="r">${num(x.u)}</td><td class="r">${money(x.v)}</td></tr>`).join('')||'<tr><td colspan="4" class="mut">Sin averías pendientes 🎉</td></tr>'}</tbody></table></div></div>
+   <div class="toolbar" style="margin-top:14px"><label>Estado<select id="avF"><option value="pendiente">Pendientes</option><option value="">Todas</option><option value="cambiado">Cambiadas</option><option value="baja">Dadas de baja</option></select></label><label>Empresa<select id="avE"><option value="">Todas</option>${empresas().map(e=>`<option>${esc(e)}</option>`).join('')}</select></label><button class="btn" id="avX">Exportar CSV</button></div><div id="avL"></div>`;
+  prodPick($('#avP'),p=>sel=p);
+  $('#avOk').onclick=()=>{const c=nkg($('#avC').value),u=$('#avU').value;if(!sel)return toast('Seleccione el producto','err');if(!(c>0))return toast('Ingrese la cantidad','err');
+    const p=DB.get('productos',sel.id);const n=nextNum('averiaConsecutivo');moveStock(p,-c,u,'averia','Avería #'+n,$('#avM').value);p.stockAveria=(+p.stockAveria||0)+c;DB.put('productos',p);
+    DB.put('averias',{numero:n,fecha:new Date().toISOString(),pid:p.id,nombre:p.nombre,codigo:p.codigo,empresa:p.empresa||'',linea:p.linea||'',cant:c,ubic:u,motivo:$('#avM').value,obs:$('#avO').value.trim(),costo:+p.costo||0,estado:'pendiente',usuario:USER.nombre});
+    toast('Avería #'+n+' registrada');drawAverias()};
+  const drawL=()=>{const f=$('#avF').value,e=$('#avE').value;const list=all.filter(a=>(!f||a.estado===f)&&(!e||a.empresa===e));
+    $('#avL').innerHTML=`<div class="tbl-wrap"><table class="t"><thead><tr><th>#</th><th>Fecha</th><th>Producto</th><th>Empresa</th><th class="r">Cant.</th><th>Motivo</th><th class="r">Valor</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${list.map(a=>`<tr><td>${a.numero}</td><td>${fdt(a.fecha)}<br><small class="mut">${esc(a.usuario)}</small></td><td class="b">${esc(a.nombre)}<br><small class="mut">${esc(a.codigo)}</small></td><td>${esc(a.empresa)}</td><td class="r">${num(a.cant)}</td><td>${esc(a.motivo)}${a.obs?'<br><small class="mut">'+esc(a.obs)+'</small>':''}</td><td class="r">${money(a.cant*a.costo)}</td>
+      <td>${AV_EST[a.estado]}${a.resuelto?'<br><small class="mut">'+fdt(a.resuelto)+'</small>':''}</td><td style="white-space:nowrap">${a.estado==='pendiente'?`<button class="btn sm" data-c="${a.id}">🔄 Cambiado</button> <button class="btn sm dan" data-b="${a.id}">Dar de baja</button>`:''}</td></tr>`).join('')||'<tr><td colspan="9" class="empty">Sin registros</td></tr>'}</tbody></table></div>`;
+    $$('[data-c]').forEach(b=>b.onclick=()=>resolverAveria(DB.get('averias',b.dataset.c),'cambio',drawAverias));
+    $$('[data-b]').forEach(b=>b.onclick=()=>resolverAveria(DB.get('averias',b.dataset.b),'baja',drawAverias))};
+  $('#avF').onchange=$('#avE').onchange=drawL;
+  $('#avX').onclick=()=>downloadCSV('averias',[['Numero','Fecha','Codigo','Producto','Empresa','Cantidad','Motivo','Observacion','Valor','Estado'],...all.map(a=>[a.numero,fdt(a.fecha),a.codigo,a.nombre,a.empresa,a.cant,a.motivo,a.obs||'',Math.round(a.cant*a.costo),a.estado])]);drawL()}
+function drawBajas(){let sel=null;const hoy=ymd(new Date());
+  $('#nvB').innerHTML=`<div class="grid2"><div class="card cfg-sec"><h3>Dar de baja / consumo interno</h3><div id="bjP"></div>
+    <div class="grid3"><label>Cantidad<input id="bjC" inputmode="decimal"></label><label>Sale de<select id="bjU"><option value="sala">Sala</option><option value="bodega">Bodega</option></select></label><label>Tipo<select id="bjT">${TIPOS_BAJA.map(x=>`<option>${x}</option>`).join('')}</select></label></div>
+    <label>Quién / para qué<input id="bjN" placeholder="Ej.: café para empleados, refrigerio de don Pedro…"></label><div><button class="btn pri" id="bjOk">Registrar salida</button></div><small class="mut">Requiere clave de administrador. Sale del inventario y queda en el kárdex y en el informe de pérdidas a costo.</small></div>
+   <div class="card" id="bjK"></div></div>
+   <div class="toolbar" style="margin-top:14px"><label>Desde<input type="date" id="bjD" value="${hoy.slice(0,8)}01"></label><label>Hasta<input type="date" id="bjH" value="${hoy}"></label><label>Tipo<select id="bjF"><option value="">Todos</option>${[...TIPOS_BAJA,'Avería dada de baja'].map(x=>`<option>${x}</option>`).join('')}</select></label><button class="btn" id="bjX">Exportar CSV</button></div><div id="bjL"></div>`;
+  prodPick($('#bjP'),p=>sel=p);
+  $('#bjOk').onclick=async()=>{const c=nkg($('#bjC').value),u=$('#bjU').value,t=$('#bjT').value;if(!sel)return toast('Seleccione el producto','err');if(!(c>0))return toast('Ingrese la cantidad','err');
+    const p=DB.get('productos',sel.id);const a=await askAdmin(`${t}: ${num(c)} × ${p.nombre} (${money(c*p.costo)} a costo)`);if(!a)return;
+    const b=registrarBaja(p,c,u,t,$('#bjN').value.trim(),a.nombre);toast(t+' registrado (#'+b.numero+')');drawBajas()};
+  let list=[];
+  const drawL=()=>{const d=$('#bjD').value,h=$('#bjH').value,f=$('#bjF').value;list=DB.all('bajas').filter(b=>{const x=ymd(b.fecha);return x>=d&&x<=h&&(!f||b.tipo===f)}).sort((a,b)=>b.numero-a.numero);
+    const pt={};list.forEach(b=>{const x=pt[b.tipo]||(pt[b.tipo]={n:0,v:0});x.n++;x.v+=b.valor});
+    $('#bjK').innerHTML=`<h3>Resumen del período</h3><div class="kpis" style="margin-top:8px"><div class="kpi"><small>Total dado de baja</small><div class="err">${money(list.reduce((a,b)=>a+b.valor,0))}</div><em>a costo · ${list.length} registros</em></div></div>
+      <table class="t"><tbody>${Object.entries(pt).sort((a,b)=>b[1].v-a[1].v).map(([t,x])=>`<tr><td>${esc(t)}</td><td class="r">${x.n}</td><td class="r b">${money(x.v)}</td></tr>`).join('')||'<tr><td class="mut">Sin bajas en el período</td></tr>'}</tbody></table>`;
+    $('#bjL').innerHTML=`<div class="tbl-wrap"><table class="t"><thead><tr><th>#</th><th>Fecha</th><th>Tipo</th><th>Producto</th><th>Línea</th><th class="r">Cant.</th><th class="r">Valor costo</th><th>Detalle</th><th>Registró / autorizó</th></tr></thead><tbody>
+    ${list.map(b=>`<tr><td>${b.numero}</td><td>${fdt(b.fecha)}</td><td><span class="pill">${esc(b.tipo)}</span></td><td class="b">${esc(b.nombre)}</td><td>${esc(b.linea)}</td><td class="r">${num(b.cant,3)}</td><td class="r">${money(b.valor)}</td><td><small>${esc(b.nota)}</small></td><td><small>${esc(b.usuario)} / ${esc(b.autorizo)}</small></td></tr>`).join('')||'<tr><td colspan="9" class="empty">Sin registros</td></tr>'}</tbody></table></div>`};
+  ['bjD','bjH','bjF'].forEach(id=>$('#'+id).onchange=drawL);
+  $('#bjX').onclick=()=>downloadCSV('bajas',[['Numero','Fecha','Tipo','Codigo','Producto','Linea','Empresa','Cantidad','ValorCosto','Detalle','Registro','Autorizo'],...list.map(b=>[b.numero,fdt(b.fecha),b.tipo,b.codigo,b.nombre,b.linea,b.empresa,b.cant,Math.round(b.valor),b.nota,b.usuario,b.autorizo])]);drawL()}
+function drawInfInv(){const hoy=ymd(new Date());
+  $('#nvB').innerHTML=`<div class="toolbar"><label>Desde<input type="date" id="ifD" value="${hoy.slice(0,8)}01"></label><label>Hasta<input type="date" id="ifH" value="${hoy}"></label><label>Línea<select id="ifL"><option value="">Todas</option>${lineas().map(x=>`<option>${esc(x)}</option>`).join('')}</select></label><label>Empresa<select id="ifE"><option value="">Todas</option>${empresas().map(x=>`<option>${esc(x)}</option>`).join('')}</select></label></div><div id="ifO"></div>`;
+  const run=()=>{const d=$('#ifD').value,h=$('#ifH').value,L=$('#ifL').value,E=$('#ifE').value;const ok=p=>p&&(!L||p.linea===L)&&(!E||p.empresa===E);const inR=f=>{const x=ymd(f);return x>=d&&x<=h};
+    const neg=DB.all('productos').filter(p=>p.activo!==false&&ok(p)&&((+p.stockSala||0)<0||(+p.stockBodega||0)<0));
+    let difF=0,difS=0;DB.all('movimientos').forEach(m=>{if(!(m.tipo==='inventario'||m.tipo==='ajuste')||!inR(m.fecha))return;const p=DB.get('productos',m.pid);if(!ok(p))return;const v=m.cant*(+p.costo||0);if(v<0)difF+=v;else difS+=v});
+    const av=DB.all('averias').filter(a=>inR(a.fecha)&&ok(DB.get('productos',a.pid)));const bj=DB.all('bajas').filter(b=>inR(b.fecha)&&ok(DB.get('productos',b.pid)));
+    const bt={};bj.forEach(b=>bt[b.tipo]=(bt[b.tipo]||0)+b.valor);const avPend=DB.all('averias').filter(a=>a.estado==='pendiente'&&ok(DB.get('productos',a.pid)));
+    const tot=-difF+bj.reduce((a,b)=>a+b.valor,0);
+    $('#ifO').innerHTML=`<div class="kpis"><div class="kpi"><small>Productos con inventario negativo</small><div class="err">${neg.length}</div></div><div class="kpi"><small>Faltantes de inventario</small><div class="err">${money(-difF)}</div><em>tomas y ajustes del período</em></div>
+      <div class="kpi"><small>Sobrantes de inventario</small><div class="ok">${money(difS)}</div></div><div class="kpi"><small>Averías registradas</small><div>${av.length}</div><em>${money(av.reduce((a,x)=>a+x.cant*x.costo,0))} · ${avPend.length} pendientes</em></div>
+      <div class="kpi"><small>Bajas y consumo interno</small><div>${money(bj.reduce((a,b)=>a+b.valor,0))}</div></div><div class="kpi" style="border-color:var(--err)"><small>Pérdida total del período</small><div class="err">${money(tot)}</div><em>faltantes + bajas, a costo</em></div></div>
+     <div class="grid2"><div class="card"><h3>Pérdidas por concepto</h3><table class="t" style="margin-top:8px"><tbody><tr><td>Faltantes en tomas / ajustes</td><td class="r b">${money(-difF)}</td></tr>${Object.entries(bt).map(([t,v])=>`<tr><td>${esc(t)}</td><td class="r b">${money(v)}</td></tr>`).join('')}<tr><td>Averías pendientes (aún recuperables)</td><td class="r">${money(avPend.reduce((a,x)=>a+x.cant*x.costo,0))}</td></tr></tbody></table></div>
+      <div class="card"><h3>Inventario negativo</h3><p class="mut" style="margin:4px 0 8px">Se vendió más de lo que el sistema tenía: falta registrar un recibo o hay un error de conteo. Ajústelos con un conteo.</p>
+      <table class="t"><thead><tr><th>Producto</th><th class="r">Sala</th><th class="r">Bodega</th><th></th></tr></thead><tbody>${neg.map(p=>`<tr><td class="b">${esc(p.nombre)}<br><small class="mut">${esc(p.codigo)} · ${esc(p.linea)}</small></td><td class="r ${p.stockSala<0?'err b':''}">${num(p.stockSala,2)}</td><td class="r ${p.stockBodega<0?'err b':''}">${num(p.stockBodega,2)}</td><td><button class="btn sm" data-aj="${p.id}">Ajustar</button> <button class="btn sm" data-k="${p.id}">Kárdex</button></td></tr>`).join('')||'<tr><td colspan="4" class="mut">Sin productos en negativo 🎉</td></tr>'}</tbody></table></div></div>`;
+    $$('[data-aj]').forEach(b=>b.onclick=()=>adjustForm(DB.get('productos',b.dataset.aj),run));$$('[data-k]').forEach(b=>b.onclick=()=>kardexModal(DB.get('productos',b.dataset.k)))};
+  ['ifD','ifH','ifL','ifE'].forEach(id=>$('#'+id).onchange=run);run()}
+
+/* ---- Historial de inventarios por producto y línea (pérdidas consecutivas) ---- */
+function eventosInventario(desde,hasta){const ev={};
+  DB.all('movimientos').forEach(m=>{if(!(m.tipo==='inventario'||m.tipo==='ajuste'))return;const d=ymd(m.fecha);if(d<desde||d>hasta)return;
+    const key=m.pid;const k2=d+'|'+(m.ref||'');const L=ev[key]||(ev[key]={});const e=L[k2]||(L[k2]={fecha:m.fecha,ref:m.ref||m.tipo,cant:0,tipo:m.tipo,usuario:m.usuario,autorizo:m.autorizo});e.cant+=m.cant;if(m.fecha>e.fecha)e.fecha=m.fecha});
+  const out={};Object.entries(ev).forEach(([pid,L])=>{const arr=Object.values(L).filter(e=>e.cant!==0).sort((a,b)=>a.fecha<b.fecha?-1:1);if(!arr.length)return;
+    let cur=0;for(let i=arr.length-1;i>=0&&arr[i].cant<0;i--)cur++;let mx=0,run=0;arr.forEach(e=>{run=e.cant<0?run+1:0;mx=Math.max(mx,run)});out[pid]={arr,racha:cur,maxRacha:mx}});return out}
+function drawHistInv(){const hoy=ymd(new Date());
+  $('#tBody').innerHTML=`<div class="toolbar"><label>Desde<input type="date" id="hiD" value="${addDays(hoy,-180)}"></label><label>Hasta<input type="date" id="hiH" value="${hoy}"></label>
+   <label>Línea<select id="hiL"><option value="">Todas</option>${lineas().map(x=>`<option>${esc(x)}</option>`).join('')}</select></label><label>Empresa<select id="hiE"><option value="">Todas</option>${empresas().map(x=>`<option>${esc(x)}</option>`).join('')}</select></label>
+   <label>Ver<select id="hiV"><option value="prod">Por producto</option><option value="linea">Por línea</option></select></label><label class="chk" style="min-width:auto"><input type="checkbox" id="hiR"> Solo con pérdidas consecutivas</label><button class="btn" id="hiX">Exportar CSV</button></div><div id="hiO"></div>`;
+  let rows=[],lrows=[];
+  const run=()=>{const ev=eventosInventario($('#hiD').value,$('#hiH').value),L=$('#hiL').value,E=$('#hiE').value,solo=$('#hiR').checked;
+    rows=Object.entries(ev).map(([pid,x])=>{const p=DB.get('productos',pid);if(!p||(L&&p.linea!==L)||(E&&p.empresa!==E))return null;const c=+p.costo||0;
+      const falt=x.arr.filter(e=>e.cant<0).reduce((a,e)=>a+e.cant,0),sob=x.arr.filter(e=>e.cant>0).reduce((a,e)=>a+e.cant,0);
+      return{p,x,falt,sob,vf:falt*c,vs:sob*c,ult:x.arr[x.arr.length-1]}}).filter(r=>r&&(!solo||r.x.racha>=2||r.x.maxRacha>=2)).sort((a,b)=>b.x.racha-a.x.racha||a.vf-b.vf);
+    const LG={};rows.forEach(r=>{const g=LG[r.p.linea||'—']||(LG[r.p.linea||'—']={refs:0,ev:0,vf:0,vs:0,alert:0});g.refs++;g.ev+=r.x.arr.length;g.vf+=r.vf;g.vs+=r.vs;if(r.x.racha>=2)g.alert++});
+    lrows=Object.entries(LG).sort((a,b)=>a[1].vf-b[1].vf);
+    const al=rows.filter(r=>r.x.racha>=2);
+    $('#hiO').innerHTML=`<div class="kpis"><div class="kpi"><small>Productos con diferencias</small><div>${rows.length}</div></div><div class="kpi" style="border-color:var(--err)"><small>⚠ Con pérdidas consecutivas</small><div class="err">${al.length}</div><em>2 o más conteos seguidos con faltante</em></div>
+      <div class="kpi"><small>Faltantes acumulados</small><div class="err">${money(-rows.reduce((a,r)=>a+r.vf,0))}</div></div><div class="kpi"><small>Sobrantes acumulados</small><div class="ok">${money(rows.reduce((a,r)=>a+r.vs,0))}</div></div></div>
+     ${$('#hiV').value==='linea'?`<div class="tbl-wrap"><table class="t"><thead><tr><th>Línea</th><th class="r">Productos con diferencias</th><th class="r">Conteos / ajustes</th><th class="r">Faltantes</th><th class="r">Sobrantes</th><th class="r">Neto</th><th class="r">⚠ Pérdidas consecutivas</th></tr></thead><tbody>
+       ${lrows.map(([l,g])=>`<tr data-l="${esc(l)}" style="cursor:pointer"><td class="b">${esc(l)}</td><td class="r">${g.refs}</td><td class="r">${g.ev}</td><td class="r err">${money(g.vf)}</td><td class="r ok">${money(g.vs)}</td><td class="r b">${money(g.vf+g.vs)}</td><td class="r ${g.alert?'err b':''}">${g.alert}</td></tr>`).join('')||'<tr><td colspan="7" class="empty">Sin diferencias en el período</td></tr>'}</tbody></table></div><small class="mut">Clic en una línea para ver sus productos.</small>`
+     :`<div class="tbl-wrap"><table class="t"><thead><tr><th>Producto</th><th>Línea</th><th class="r">Conteos</th><th>Historial (antiguo → reciente)</th><th class="r">Faltante und</th><th class="r">Faltante $</th><th class="r">Sobrante $</th><th>Alerta</th></tr></thead><tbody>
+       ${rows.map(r=>`<tr data-p="${r.p.id}" style="cursor:pointer"><td class="b">${esc(r.p.nombre)}<br><small class="mut">${esc(r.p.codigo)}</small></td><td>${esc(r.p.linea)}</td><td class="r">${r.x.arr.length}</td>
+         <td>${r.x.arr.slice(-8).map(e=>`<span class="pill ${e.cant<0?'err':'ok'}" title="${fdt(e.fecha)} · ${esc(e.ref)}">${e.cant>0?'+':''}${num(e.cant,2)}</span>`).join(' ')}</td>
+         <td class="r err">${num(r.falt,2)}</td><td class="r err">${money(r.vf)}</td><td class="r ok">${money(r.vs)}</td><td>${r.x.racha>=2?`<span class="pill err">⚠ ${r.x.racha} pérdidas seguidas</span>`:(r.x.maxRacha>=2?`<span class="pill warn">Tuvo ${r.x.maxRacha} seguidas</span>`:'')}</td></tr>`).join('')||'<tr><td colspan="8" class="empty">Sin diferencias en el período</td></tr>'}</tbody></table></div><small class="mut">Clic en un producto para ver el detalle de cada conteo.</small>`}`;
+    $$('[data-l]').forEach(tr=>tr.onclick=()=>{$('#hiL').value=tr.dataset.l;$('#hiV').value='prod';run()});
+    $$('[data-p]').forEach(tr=>tr.onclick=()=>{const r=rows.find(x=>x.p.id===tr.dataset.p);
+      Modal.open({wide:true,title:'Historial de inventario · '+esc(r.p.nombre),body:`<div class="hint">${esc(r.p.linea)} · ${esc(r.p.empresa)} · Costo ${money(r.p.costo)}${r.x.racha>=2?` · <b class="err">⚠ ${r.x.racha} pérdidas consecutivas</b>`:''}</div>
+        <div class="tbl-wrap"><table class="t"><thead><tr><th>Fecha</th><th>Origen</th><th class="r">Diferencia</th><th class="r">Valor</th><th>Usuario</th><th>Autorizó</th></tr></thead><tbody>${r.x.arr.slice().reverse().map(e=>`<tr><td>${fdt(e.fecha)}</td><td>${esc(e.ref)}</td><td class="r b ${e.cant<0?'err':'ok'}">${e.cant>0?'+':''}${num(e.cant,3)}</td><td class="r">${money(e.cant*(+r.p.costo||0))}</td><td>${esc(e.usuario||'')}</td><td>${esc(e.autorizo||'')}</td></tr>`).join('')}</tbody></table></div>`})})};
+  ['hiD','hiH','hiL','hiE','hiV','hiR'].forEach(id=>$('#'+id).onchange=run);
+  $('#hiX').onclick=()=>downloadCSV('historial_inventarios',[['Codigo','Producto','Linea','Empresa','Conteos','FaltanteUnd','FaltanteValor','SobranteValor','PerdidasConsecutivas','Historial'],...rows.map(r=>[r.p.codigo,r.p.nombre,r.p.linea,r.p.empresa,r.x.arr.length,r.falt,Math.round(r.vf),Math.round(r.vs),r.x.racha,r.x.arr.map(e=>ymd(e.fecha)+':'+e.cant).join(' ')])]);run()}
+
+/* ---- Historial de sugeridos ---- */
+function pedidoSheetHTML(rec){const c=cfg();
+  return `<div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h2 style="margin:0">${esc(c.negocio)}</h2><div>NIT ${esc(c.nit)} · ${esc(c.direccion)} · Tel. ${esc(c.telefono)}</div></div><div style="text-align:right"><h2 style="margin:0">PEDIDO SUGERIDO${rec.numero?' No. '+rec.numero:''}</h2><div>${fdt(rec.fecha)}</div></div></div>
+   <p><b>Proveedor:</b> ${esc(rec.empresa)}${rec.linea?' &nbsp; <b>Línea:</b> '+esc(rec.linea):''}</p>
+   <table class="sh"><thead><tr><th>#</th><th>Código</th><th>Producto</th><th>Línea</th><th class="r">Stock</th><th>Cantidad a pedir</th><th class="r">Unidades</th><th class="r">Costo est.</th></tr></thead><tbody>
+   ${rec.items.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.codigo)}</td><td>${esc(r.nombre)}</td><td>${esc(r.linea)}</td><td class="r">${num(r.stock,2)}</td><td><b>${esc(r.pres)}</b></td><td class="r">${num(r.und)}</td><td class="r">${money(r.und*r.costo)}</td></tr>`).join('')}</tbody>
+   <tfoot><tr><td colspan="6" class="r b">TOTAL ESTIMADO</td><td class="r b">${num(rec.items.reduce((a,r)=>a+r.und,0))}</td><td class="r b">${money(rec.total)}</td></tr></tfoot></table>
+   ${(rec.averias||[]).length?`<h3 style="margin-top:18px">Averías para cambio</h3><table class="sh"><thead><tr><th>#</th><th>Fecha</th><th>Producto</th><th class="r">Cantidad</th><th>Motivo</th></tr></thead><tbody>${rec.averias.map(a=>`<tr><td>${a.numero}</td><td>${fdt(a.fecha).slice(0,10)}</td><td>${esc(a.nombre)}</td><td class="r">${num(a.cant)}</td><td>${esc(a.motivo)}</td></tr>`).join('')}</tbody></table>`:''}
+   <br><br><div style="display:flex;justify-content:space-between"><div>_______________________<br>Elaboró</div><div>_______________________<br>Proveedor / vendedor</div></div>`}
 
 /* =====================================================================
    DISPOSITIVOS: puertos serial/USB (Web Serial, Chrome/Edge en PC)
